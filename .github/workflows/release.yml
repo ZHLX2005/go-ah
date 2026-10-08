@@ -209,19 +209,39 @@ jobs:
         run: |
           set -euo pipefail
           NAME="go-ah_${{ steps.vars.outputs.version }}_source"
-          mkdir -p "dist/${NAME}"
+          # 归档文件必须放在被 tar 的目录树之外：
+          # 若写入 ./dist/...，tar 会在读取过程中发现自身输出在变化，
+          # 报 "file changed as we read it" 并以 exit 1 失败。
+          rm -rf ./bundle ./dist
+          mkdir -p "./bundle/${NAME}"
+
           tar -cf - \
-            --exclude='*/node_modules' \
-            --exclude='*/.codebuddy' \
+            --exclude='./.git' \
+            --exclude='./.codebuddy' \
+            --exclude='./bundle' \
+            --exclude='./dist' \
             --exclude='*.db' \
-            --exclude='.git' \
-            . | ( cd "dist/${NAME}" && tar -xf - )
-          ( cd dist && tar -czf "${NAME}.tar.gz" "${NAME}" )
+            --exclude='*/node_modules' \
+            . | ( cd "./bundle/${NAME}" && tar -xf - )
+
+          # 校验：前端产物必须已包含在内
+          test -f "./bundle/${NAME}/auth-hub/web/idp-web/dist/index.html" \
+            || { echo "::error::源码包缺少 auth-hub 前端产物"; exit 1; }
+          test -f "./bundle/${NAME}/template-business-server/web/template-web/dist/index.html" \
+            || { echo "::error::源码包缺少业务前端产物"; exit 1; }
+
+          ( cd ./bundle && tar -czf "../${NAME}.tar.gz" "${NAME}" )
+
+          echo "产物清单："
+          ls -lh "${NAME}.tar.gz"
+          echo "包内顶层结构："
+          tar -tzf "${NAME}.tar.gz" | head -20
+          echo "包内文件总数：$(tar -tzf "${NAME}.tar.gz" | wc -l)"
 
       - uses: actions/upload-artifact@v4
         with:
           name: dist-source
-          path: dist/*.tar.gz
+          path: go-ah_*_source.tar.gz
           if-no-files-found: error
 
   # ─────────────────────────────────────────────────────────────
