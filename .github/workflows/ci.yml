@@ -174,15 +174,32 @@ jobs:
           npx playwright install --with-deps chromium
 
       # ── 启动认证中心 auth-hub ──
-      - name: 启动 auth-hub
+      # 必须先启动并等待就绪，再启动业务服务：
+      # 业务服务启动时会拉取 OIDC 发现文档做初始化，若此时认证中心
+      # 尚未就绪，初始化会失败并缓存该状态，导致后续 /api/auth/callback
+      # 全部返回 503（本地已复现，E2E 因此超时）。
+      - name: 构建并启动 auth-hub
         working-directory: auth-hub
         run: |
           go mod download
           go build -o /tmp/auth-hub .
           nohup /tmp/auth-hub > /tmp/auth-hub.log 2>&1 &
 
+      - name: 等待 auth-hub 就绪
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:8080/.well-known/openid-configuration > /dev/null; then
+              echo "auth-hub 已就绪（第 ${i} 次探测）"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::auth-hub 启动超时"
+          cat /tmp/auth-hub.log || true
+          exit 1
+
       # ── 启动模板业务平台 ──
-      - name: 启动 template-business-server
+      - name: 构建并启动 template-business-server
         working-directory: template-business-server
         env:
           BIZ_TOKEN_SECRET: ${{ secrets.BIZ_TOKEN_SECRET || 'ci-only-secret-not-for-production-use-32b' }}
@@ -191,22 +208,45 @@ jobs:
           go build -o /tmp/biz-server .
           nohup /tmp/biz-server > /tmp/biz-server.log 2>&1 &
 
-      - name: 等待服务就绪
+      - name: 等待业务服务就绪（并确认 OIDC 初始化成功）
         run: |
-          for i in $(seq 1 30); do
-            if curl -sf http://127.0.0.1:8080/.well-known/openid-configuration > /dev/null \
-               && curl -sf http://127.0.0.1:8081/api/session > /dev/null; then
-              echo "两个服务均已就绪"
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:8081/api/health > /dev/null; then
+              # 关键：/api/health 只能说明 HTTP 起来了，还必须确认
+              # OIDC 发现文档拉取成功，否则登录链路必然失败。
+              if grep -q "初始化 OIDC 客户端失败" /tmp/biz-server.log; then
+                echo "::error::业务服务 OIDC 初始化失败（认证中心未就绪或不可达）"
+                cat /tmp/biz-server.log
+                exit 1
+              fi
+              if ! grep -q "OIDC" /tmp/biz-server.log; then
+                echo "业务服务已就绪（第 ${i} 次探测）"
+              else
+                echo "业务服务已就绪（第 ${i} 次探测）"
+              fi
               exit 0
             fi
             sleep 1
           done
-          echo "::error::服务启动超时"
+          echo "::error::业务服务启动超时"
           echo "===== auth-hub 日志 ====="
           cat /tmp/auth-hub.log || true
           echo "===== business 日志 ====="
           cat /tmp/biz-server.log || true
           exit 1
+
+      - name: 冒烟验证（认证中心 / 业务 / 发现文档）
+        run: |
+          set -e
+          echo "--- OIDC 发现文档 ---"
+          curl -sf http://127.0.0.1:8080/.well-known/openid-configuration | head -c 200; echo
+          echo "--- JWKS ---"
+          curl -sf http://127.0.0.1:8080/.well-known/jwks.json | head -c 120; echo
+          echo "--- 业务首页（应返回 HTML）---"
+          curl -sf http://127.0.0.1:8081/ | head -c 120; echo
+          echo "--- 业务 OIDC 配置下发 ---"
+          curl -sf http://127.0.0.1:8081/api/config | head -c 200; echo
+          echo "冒烟验证通过"
 
       - name: 运行 E2E 测试
         working-directory: e2e
