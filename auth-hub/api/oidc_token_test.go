@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"math/big"
+	"strings"
 	"testing"
 	"time"
 
@@ -193,18 +194,41 @@ func TestSignIDToken_TamperedRejected(t *testing.T) {
 	u := testUser(t, db.DB)
 
 	tok, _ := signIDToken(u, "c", "", "openid")
-	// 篡改签名最后一位
-	b := []byte(tok)
-	if b[len(b)-1] == 'A' {
-		b[len(b)-1] = 'B'
-	} else {
-		b[len(b)-1] = 'A'
+
+	// 注意：不能简单地翻转 JWT 末尾 base64url 字符——
+	// 末位字符包含未使用的填充位，翻转后可能解码出「相同」的签名字节，
+	// 导致验签依然通过（这是一个真实的 flaky 用例，CI 上已复现）。
+	// 正确做法：解出签名段并在字节层面翻转，确保密文确实改变。
+	parts := strings.Split(tok, ".")
+	if len(parts) != 3 {
+		t.Fatalf("JWT 应有三段，实际 %d", len(parts))
 	}
-	parsed, err := jwt.Parse(string(b), func(tk *jwt.Token) (interface{}, error) {
+	sig, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		t.Fatalf("签名段不是合法 base64url: %v", err)
+	}
+	if len(sig) == 0 {
+		t.Fatal("签名段为空")
+	}
+	// 翻转签名的第一个字节（必定影响 RSA 验签结果）
+	sig[0] ^= 0xFF
+	parts[2] = base64.RawURLEncoding.EncodeToString(sig)
+	tampered := strings.Join(parts, ".")
+
+	parsed, err := jwt.Parse(tampered, func(tk *jwt.Token) (interface{}, error) {
 		return &db.SigningKey.PublicKey, nil
 	})
 	if err == nil && parsed.Valid {
 		t.Error("篡改签名后不应通过验签")
+	}
+
+	// 反向确认：原始 token 本身必须验签通过，
+	// 否则上面的断言可能因「本来就失败」而假阳性通过。
+	orig, err := jwt.Parse(tok, func(tk *jwt.Token) (interface{}, error) {
+		return &db.SigningKey.PublicKey, nil
+	})
+	if err != nil || !orig.Valid {
+		t.Fatalf("原始 token 应验签通过，实际 err=%v", err)
 	}
 }
 
