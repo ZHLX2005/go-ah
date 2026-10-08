@@ -54,10 +54,8 @@ COPY --from=build /app/dist /usr/share/nginx/html
 
 EXPOSE 80
 
-# 前置检查：配置语法错就起不来，比容器起来后 404 好查。
-# upstream 主机名（auth-hub）只在运行时的 docker 网络里存在，构建期解析不到
-# 会让 nginx -t 直接报 host not found —— 这里临时注入一条 hosts 记录
-# 让语法检查通过；仅存在于本构建层，运行时仍走 docker 内置 DNS。
-RUN echo "127.0.0.1 auth-hub" >> /etc/hosts && nginx -t
+# 注意：不能在这里跑 nginx -t —— upstream 主机名（auth-hub）只在运行时的
+# docker 网络里存在，构建期解析不到必报 host not found；/etc/hosts 又是
+# 只读挂载没法注入。配置错误由 deploy 工作流部署后的健康检查兜底。
 
 CMD ["nginx", "-g", "daemon off;"]
