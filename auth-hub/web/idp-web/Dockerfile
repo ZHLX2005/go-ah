@@ -10,28 +10,32 @@
 # =============================================================================
 
 # ── 阶段 1：构建 SPA ──────────────────────────────────────────────────────
-FROM node:22-alpine AS build
+#
+# 刻意用 glibc 的 node:22-slim，而不是更小的 node:22-alpine。
+#
+# alpine 是 musl libc，vite/rollup/esbuild 的原生包在它上面叫
+# @rollup/rollup-linux-x64-musl，而 glibc 上是 …-gnu。两套名字不通用，
+# 一旦构建环境与 CI（ubuntu，glibc）不一致，就会出现「CI 过、镜像不过」
+# 或者「装了包但找不到」这类只在某一侧复现的问题。
+#
+# 多阶段构建下构建镜像的体积不进最终产物（运行阶段只有 nginx + 静态文件），
+# 所以这里没有理由为省体积去换 libc。
+FROM node:22-slim AS build
 
 WORKDIR /app
 
 # 依赖清单先拷：源码变动时这一层仍命中缓存，省掉重复安装
 COPY package.json package-lock.json ./
 
-# 依赖安装。
+# 依赖安装：npm ci 严格按 lock 装，可复现。
+# 末尾断言原生包到位 —— 缺了就在这一层失败，而不是拖到 vite 阶段报一个
+# 「Cannot find module @rollup/rollup-linux-x64-gnu」这种看不出所以然的错。
 #
-# 优先 npm ci（严格按 lock 装，可复现），但 npm 有个跨平台的已知缺陷
-# (npm/cli#4828)：lock 里只解析了「生成 lock 的那个平台」的原生 optional 包。
-# 换到 Linux 后 npm ci 可能装不出 @rollup/rollup-linux-x64-gnu 与
-# @esbuild/linux-x64，构建会在 vite 阶段抛「Cannot find module ...」——
-# 这个报错看起来像代码问题，其实与代码无关，很容易查偏。
-#
-# 所以这里 ci 之后**直接验产物**：缺了就回退 npm install 重新解析依赖树。
+# 注意：lock 文件必须与 package.json 同步。两者不同步时 npm ci 会直接
+# EUSAGE 退出（这是好事，比静默装错版本强），用
+#   npm install --package-lock-only
+# 重新生成即可 —— 本仓库此前就因此挂过一次。
 RUN npm ci --no-audit --no-fund \
- && if [ ! -d node_modules/@rollup/rollup-linux-x64-gnu ] || [ ! -d node_modules/@esbuild/linux-x64 ]; then \
-      echo "[deps] npm ci 未装齐 Linux 原生包，回退到 npm install 重新解析依赖树"; \
-      rm -rf node_modules; \
-      npm install --no-audit --no-fund; \
-    fi \
  && test -d node_modules/@rollup/rollup-linux-x64-gnu \
  && test -d node_modules/@esbuild/linux-x64
 

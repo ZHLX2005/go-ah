@@ -116,8 +116,8 @@ type UserSession struct {
 // 落到 PG 后密钥在重启间保持稳定；多副本部署可用 IDP_SIGNING_KEY_PEM
 // 显式注入同一把，避免各副本各自生成。
 type SigningKeyRecord struct {
-	ID        uint      `gorm:"primaryKey"`
-	KeyID     string    `gorm:"uniqueIndex;size:64;not null"`
-	PEM       string    `gorm:"type:text;not null"` // PKCS#8 PEM，绝不外发
+	ID        uint   `gorm:"primaryKey"`
+	KeyID     string `gorm:"uniqueIndex;size:64;not null"`
+	PEM       string `gorm:"type:text;not null"` // PKCS#8 PEM，绝不外发
 	CreatedAt time.Time
 }
