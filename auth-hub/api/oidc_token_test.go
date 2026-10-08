@@ -11,27 +11,31 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	"gorm.io/driver/sqlite"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
 	"github.com/ZHLX2005/go-ah/auth-hub/db"
+	"github.com/ZHLX2005/go-ah/auth-hub/internal/testpg"
 )
 
 // ============================================================
 // 测试基础设施
 // ============================================================
 
-// setupTestDB 打开内存 SQLite 并迁移全部表，返回可用的 DB
+// setupTestDB 在一次性 PostgreSQL schema 上迁移全部表，返回可用的 DB。
+//
+// 不再用内存 SQLite：存储已切到 PG，方言差异（唯一索引冲突、
+// 自增序列、时间精度、布尔默认值）只有真库才验得出来；
+// 而每个测试独立 schema 保证了隔离性与可清理（见 internal/testpg）。
 func setupTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	// 每个测试用独立的内存库（DSN 带唯一名，避免并发测试互相干扰）
-	dsn := "file:" + t.Name() + "?mode=memory&cache=shared"
-	g, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
+	dsn, _ := testpg.NewSchema(t)
+	g, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
 	if err != nil {
-		t.Fatalf("打开内存数据库失败: %v", err)
+		t.Fatalf("连接测试数据库失败: %v", err)
 	}
 	if err := g.AutoMigrate(
 		&db.User{},
@@ -40,6 +44,7 @@ func setupTestDB(t *testing.T) *gorm.DB {
 		&db.OAuthRefreshToken{},
 		&db.OAuthAccessToken{},
 		&db.UserSession{},
+		&db.SigningKeyRecord{},
 	); err != nil {
 		t.Fatalf("迁移失败: %v", err)
 	}

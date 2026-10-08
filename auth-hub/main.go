@@ -18,9 +18,10 @@ import (
 var version = "dev"
 
 func main() {
-	// 1) 初始化 SQLite
-	db.Init(db.Env("IDP_DB", "idp.db"))
-	// 2) 初始化 RSA 签名密钥
+	// 1) 连接 PostgreSQL（共享实例，auth-hub 的数据落在独立 schema 里）
+	//    连接串通过 IDP_DSN 注入；search_path 决定落哪个 schema。
+	db.Init(db.Env("IDP_DSN", db.DefaultDSN))
+	// 2) 加载/生成 RSA 签名密钥（持久化在库里，重启后保持不变）
 	db.InitKeys()
 
 	log.Printf("[auth-hub] version=%s 启动中…", version)

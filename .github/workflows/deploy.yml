@@ -1,0 +1,365 @@
+name: Deploy auth-hub
+
+# 统一登录平台部署：两个容器 + 一个共享网络。
+#
+#   auth-hub-web (nginx)  ← 公网入口，托管 SPA 并把 /api、/oauth2、/.well-known 反代到后端
+#   auth-hub     (go)     ← 只提供 API 与 OIDC 端点
+#
+# ⚠️ 引入 nginx 之后 **IDP_ISSUER 必须改成 nginx 的对外地址**（默认 :8082），
+#    不能再用后端端口 8080。原因：发现文档里的 authorization_endpoint /
+#    end_session_endpoint 都是「issuer + 路径」拼的，而这两个端点**由浏览器访问**。
+#    issuer 若仍写 8080，浏览器就会绕过 nginx 直连后端容器 ——
+#    而 SPA 已经不在后端镜像里了（见根目录 Dockerfile），登录会 404。
+#    本文件第 9 步专门断言这一点。
+#
+# 与 gs-ac 的 deploy.yml 之间唯一的强耦合：本仓库的 IDP_ISSUER 必须等于
+# go-ac 侧的 OIDC_ISSUER；本仓库的 GSAC_REDIRECT_URI / GSAC_POST_LOGOUT_URI
+# 必须分别覆盖 go-ac 侧的 OIDC_REDIRECT_URI / OIDC_POST_LOGOUT_URI。
+#
+# 端口分工（同机部署时四者互不冲突）：
+#   8080  auth-hub 后端（直连调试用）
+#   8082  auth-hub 前端 nginx（公网入口 / issuer）
+#   8000  gs-ac 后端
+#   8081  gs-ac 前端 nginx
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-auth-hub-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      BACKEND_IMAGE: auth-hub
+      WEB_IMAGE: auth-hub-web
+      NETWORK: idp-net
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    # ─────────────────────────────────────────────────────────────
+    # 前置校验：这一组变量配歪的症状只有一个「登录失败」，
+    # 从两侧日志都很难反推是哪个错了，能提前拦的都拦住。
+    # ─────────────────────────────────────────────────────────────
+    - name: Preflight 校验部署参数
+      env:
+        IDP_DSN: ${{ secrets.IDP_DSN }}
+        IDP_ISSUER: ${{ secrets.IDP_ISSUER }}
+        GSAC_REDIRECT_URI: ${{ secrets.GSAC_REDIRECT_URI }}
+        GSAC_POST_LOGOUT_URI: ${{ secrets.GSAC_POST_LOGOUT_URI }}
+        APP_PORT: ${{ secrets.APP_PORT }}
+      run: |
+        set -euo pipefail
+        fail=0
+        check() {
+          local name="$1" value="$2"
+          if [ -z "$value" ]; then
+            echo "::error::$name 未配置（Repository secrets）"
+            fail=1
+          else
+            echo "✓ $name 已配置"
+          fi
+        }
+        check IDP_DSN "$IDP_DSN"
+        check IDP_ISSUER "$IDP_ISSUER"
+        check GSAC_REDIRECT_URI "$GSAC_REDIRECT_URI"
+        check GSAC_POST_LOGOUT_URI "$GSAC_POST_LOGOUT_URI"
+
+        if [ "$fail" -ne 0 ]; then
+          cat <<'EOF'
+        ::error::缺少必需 secret。请在仓库 Settings → Secrets and variables → Actions 配置：
+          HOST                  服务器地址
+          USERNAME              SSH 用户名
+          SSH_KEY               SSH 私钥（含 BEGIN/END 两行）
+          IDP_DSN               PostgreSQL 连接串，search_path 决定 schema，例如
+                                postgres://user:pw@<pg-host>:5432/postgres?sslmode=disable&search_path=auth_hub
+          IDP_ISSUER            **nginx 前端的对外地址**，例如 http://<服务器IP>:8082
+                                （不要写后端端口 8080 —— 见本文件顶部说明）
+          GSAC_REDIRECT_URI     go-ac 前端回调，须与 go-ac 的 OIDC_REDIRECT_URI 一致，
+                                形如 http://<服务器IP>:8081/oauth/callback
+          GSAC_POST_LOGOUT_URI  go-ac 前端登录页，须与 go-ac 的 OIDC_POST_LOGOUT_URI 一致
+
+        可选：
+          PORT                  SSH 端口，默认 22
+          APP_PORT              前端 nginx 宿主端口，默认 8082
+          API_PORT              后端 API 宿主端口，默认 8080
+          IDP_SIGNING_KEY_PEM   固定 RSA 私钥（PKCS#8 PEM）。仅多副本时需要。
+        EOF
+          exit 1
+        fi
+
+        case "$IDP_ISSUER" in
+          http://*|https://*) ;;
+          *) echo "::error::IDP_ISSUER 必须以 http:// 或 https:// 开头"; exit 1 ;;
+        esac
+        case "$IDP_ISSUER" in
+          *//127.0.0.1*|*//localhost*)
+            echo "::error::IDP_ISSUER 指向回环地址（$IDP_ISSUER），依赖方无法用它初始化 OIDC。"
+            exit 1 ;;
+        esac
+
+        # 回调白名单必须覆盖 go-ac 前端的两个地址
+        case "$GSAC_REDIRECT_URI" in
+          *"/oauth/callback"*) ;;
+          *) echo "::error::GSAC_REDIRECT_URI 应包含 /oauth/callback（go-ac 前端的回调路由），当前：$GSAC_REDIRECT_URI"; exit 1 ;;
+        esac
+        case "$GSAC_POST_LOGOUT_URI" in
+          *"/login"*) ;;
+          *) echo "::error::GSAC_POST_LOGOUT_URI 应包含 /login，当前：$GSAC_POST_LOGOUT_URI"; exit 1 ;;
+        esac
+        case "$IDP_DSN" in
+          postgres://*|postgresql://*) ;;
+          *) echo "::error::IDP_DSN 必须是 postgres:// 或 postgresql:// 连接串"; exit 1 ;;
+        esac
+
+        echo "前置校验通过（IDP_DSN 已配置，不回显；SSH → ${{ secrets.USERNAME }}@${{ secrets.HOST }}）"
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build 后端镜像（纯 Go，不含前端）
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        file: ./Dockerfile
+        load: true
+        tags: ${{ env.BACKEND_IMAGE }}:latest
+        build-args: |
+          VERSION=${{ github.sha }}
+        labels: |
+          org.opencontainers.image.revision=${{ github.sha }}
+          org.opencontainers.image.title=auth-hub backend
+        cache-from: type=gha,scope=idp-backend
+        cache-to: type=gha,mode=max,scope=idp-backend
+
+    - name: Build 前端镜像（nginx + SPA）
+      uses: docker/build-push-action@v6
+      with:
+        context: ./auth-hub/web/idp-web
+        file: ./auth-hub/web/idp-web/Dockerfile
+        load: true
+        tags: ${{ env.WEB_IMAGE }}:latest
+        labels: |
+          org.opencontainers.image.revision=${{ github.sha }}
+          org.opencontainers.image.title=auth-hub web (nginx)
+        cache-from: type=gha,scope=idp-web
+        cache-to: type=gha,mode=max,scope=idp-web
+
+    - name: 导出镜像
+      run: |
+        set -e
+        docker save ${{ env.BACKEND_IMAGE }}:latest | gzip > backend.tar.gz
+        docker save ${{ env.WEB_IMAGE }}:latest     | gzip > web.tar.gz
+        ls -lh backend.tar.gz web.tar.gz
+
+    - name: 拷贝镜像到服务器
+      uses: appleboy/scp-action@v0.1.7
+      with:
+        host: ${{ secrets.HOST }}
+        username: ${{ secrets.USERNAME }}
+        key: ${{ secrets.SSH_KEY }}
+        port: ${{ secrets.PORT || 22 }}
+        source: "backend.tar.gz,web.tar.gz"
+        target: "~/"
+        timeout: 15m
+
+    - name: 在服务器上载入并启动
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ secrets.HOST }}
+        username: ${{ secrets.USERNAME }}
+        key: ${{ secrets.SSH_KEY }}
+        port: ${{ secrets.PORT || 22 }}
+        timeout: 15m
+        command_timeout: 20m
+        script: |
+          bash -c '
+          set -e
+
+          BACKEND_IMAGE="auth-hub"
+          WEB_IMAGE="auth-hub-web"
+          BACKEND_NAME="auth-hub"
+          WEB_NAME="auth-hub-web"
+          NETWORK="idp-net"
+          # API_PORT 默认 18080 而不是 8080：目标服务器上 8080 已被宿主机的
+          # gost 进程占用，沿用 8080 会直接撞端口。这个端口只用于直连调试，
+          # 前端 nginx 是通过 docker 网络访问后端的，不依赖它。
+          API_PORT="${{ secrets.API_PORT || 18080 }}"
+          APP_PORT="${{ secrets.APP_PORT || 8082 }}"
+
+          IDP_DSN="${{ secrets.IDP_DSN }}"
+          IDP_ISSUER="${{ secrets.IDP_ISSUER }}"
+          IDP_SIGNING_KEY_PEM="${{ secrets.IDP_SIGNING_KEY_PEM }}"
+          GSAC_REDIRECT_URI="${{ secrets.GSAC_REDIRECT_URI }}"
+          GSAC_POST_LOGOUT_URI="${{ secrets.GSAC_POST_LOGOUT_URI }}"
+
+          echo "本次部署 revision: ${{ github.sha }}"
+
+          # Step 1: 停并删旧容器（先停前端，避免它把请求打到已摘掉的后端）
+          echo "Step 1: 停止旧容器…"
+          for c in "$WEB_NAME" "$BACKEND_NAME"; do
+            if docker ps -a -q -f name=^/${c}$ 2>/dev/null | grep -q .; then
+              docker stop $c 2>/dev/null || true
+              docker rm $c
+              echo "  已删除 $c"
+            else
+              echo "  无 $c"
+            fi
+            if docker ps -a -q -f name=^/${c}$ 2>/dev/null | grep -q .; then
+              echo "ERROR: $c 删除失败！"
+              exit 1
+            fi
+          done
+          docker network prune -f 2>/dev/null || true
+
+          # Step 2: 共享网络 —— nginx 靠容器名 auth-hub 解析到后端，
+          #         必须同一用户自定义网络（默认 bridge 不做名字解析）
+          echo "Step 2: 准备网络 $NETWORK…"
+          docker network inspect $NETWORK >/dev/null 2>&1 || docker network create $NETWORK
+          echo "  网络就绪"
+
+          # Step 3: 删旧镜像并载入新镜像
+          echo "Step 3: 载入新镜像…"
+          docker rmi $BACKEND_IMAGE:latest -f 2>/dev/null || true
+          docker rmi $WEB_IMAGE:latest -f 2>/dev/null || true
+          docker load < backend.tar.gz
+          docker load < web.tar.gz
+          rm -f backend.tar.gz web.tar.gz
+          for img in $BACKEND_IMAGE $WEB_IMAGE; do
+            if ! docker images -q $img:latest 2>/dev/null | grep -q .; then
+              echo "ERROR: $img 载入失败！"
+              exit 1
+            fi
+          done
+
+          # Step 4: 启动后端
+          #   IDP_ISSUER 指向 nginx 的对外地址（不是本容器的端口）
+          echo "Step 4: 启动后端 auth-hub…"
+          set -- -d \
+            --name $BACKEND_NAME \
+            --network $NETWORK \
+            -p ${API_PORT}:8080 \
+            --restart unless-stopped \
+            -e IDP_ADDR=0.0.0.0:8080 \
+            -e IDP_DSN="$IDP_DSN" \
+            -e IDP_ISSUER="$IDP_ISSUER" \
+            -e GSAC_REDIRECT_URI="$GSAC_REDIRECT_URI" \
+            -e GSAC_POST_LOGOUT_URI="$GSAC_POST_LOGOUT_URI"
+
+          # 只在配了固定密钥时才传：空值对代码而言等同于未设置，但会让
+          # `docker inspect` 里多出一个空变量，徒增困惑
+          if [ -n "$IDP_SIGNING_KEY_PEM" ]; then
+            set -- "$@" -e IDP_SIGNING_KEY_PEM="$IDP_SIGNING_KEY_PEM"
+          fi
+          docker run "$@" $BACKEND_IMAGE:latest
+
+          # Step 5: 后端健康检查（探发现文档，它才是 OIDC 链路真正依赖的端点）
+          echo "Step 5: 后端健康检查…"
+          PASSED=false
+          for i in $(seq 1 12); do
+            echo "  尝试 $i/12 …"
+            if curl -f -s http://localhost:${API_PORT}/.well-known/openid-configuration >/dev/null 2>&1; then
+              PASSED=true
+              echo "  后端健康"
+              break
+            fi
+            sleep 5
+          done
+          if [ "$PASSED" = false ]; then
+            echo "ERROR: 后端健康检查失败！"
+            docker logs $BACKEND_NAME --tail 120
+            exit 1
+          fi
+
+          # Step 6: 断言发现文档的 issuer 与 IDP_ISSUER 一致
+          echo "Step 6: 校验 issuer…"
+          DOC_ISSUER=$(curl -f -s http://localhost:${API_PORT}/.well-known/openid-configuration \
+            | tr "," "\n" | grep -m1 "\"issuer\"" | cut -d"\"" -f4 || true)
+          echo "  发现文档 issuer = $DOC_ISSUER"
+          if [ "$DOC_ISSUER" != "$IDP_ISSUER" ]; then
+            echo "ERROR: 发现文档 issuer($DOC_ISSUER) 与 IDP_ISSUER($IDP_ISSUER) 不一致！"
+            echo "依赖方 go-oidc 会拒绝该 provider 签发的 id_token。"
+            exit 1
+          fi
+
+          # Step 7: 启动前端 nginx
+          echo "Step 7: 启动前端 auth-hub-web…"
+          docker run -d \
+            --name $WEB_NAME \
+            --network $NETWORK \
+            -p ${APP_PORT}:80 \
+            --restart unless-stopped \
+            $WEB_IMAGE:latest
+
+          if ! docker ps -q -f name=^/${WEB_NAME}$ 2>/dev/null | grep -q .; then
+            echo "ERROR: 前端容器启动失败！"
+            docker logs $WEB_NAME --tail 80
+            exit 1
+          fi
+
+          # Step 8: 前端静态与 SPA 路由
+          echo "Step 8: 前端健康检查…"
+          for i in $(seq 1 8); do
+            if curl -f -s http://localhost:${APP_PORT}/ | grep -q "id=\"root\""; then
+              echo "  首页正常"
+              break
+            fi
+            if [ $i -eq 8 ]; then
+              echo "ERROR: 前端首页未返回预期 HTML！"
+              docker logs $WEB_NAME --tail 80
+              exit 1
+            fi
+            sleep 3
+          done
+          # 三个前端路由都要能命中 SPA fallback，否则用户点进去会 404
+          for p in /login /consent /admin/users; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:${APP_PORT}${p}")
+            if [ "$code" != "200" ]; then
+              echo "ERROR: ${p} 返回 $code（应为 200，SPA fallback 失效）"
+              docker logs $WEB_NAME --tail 40
+              exit 1
+            fi
+            echo "  ${p} → 200 ✓"
+          done
+
+          # Step 9: ★ 关键断言 —— IDP_ISSUER 必须指向一个真能提供 SPA 的地址
+          #   把两件事一次验掉：
+          #     ① nginx → 后端的 /.well-known 反代通不通
+          #     ② issuer 是不是真的落在 nginx 上（而不是后端端口 8080）
+          #   若 issuer 写成了后端端口，这里取 /login 会 404 ——
+          #   因为 SPA 已经不在后端镜像里了。这个错误在别处极难定位。
+          echo "Step 9: 校验 issuer 指向的前端确实能提供 SPA…"
+          ISSUER_LOGIN_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "${IDP_ISSUER}/login")
+          if [ "$ISSUER_LOGIN_CODE" != "200" ]; then
+            echo "ERROR: ${IDP_ISSUER}/login 返回 $ISSUER_LOGIN_CODE（应为 200）。"
+            echo "  多半是 IDP_ISSUER 写成了后端端口（$API_PORT）而不是前端 nginx 端口（$APP_PORT）。"
+            echo "  前端 SPA 不在后端镜像里，issuer 必须指向 nginx。"
+            exit 1
+          fi
+          echo "  ${IDP_ISSUER}/login → 200 ✓"
+
+          echo "Step 10: 经 nginx 校验发现文档…"
+          PROXIED_ISSUER=$(curl -f -s --max-time 10 "${IDP_ISSUER}/.well-known/openid-configuration" \
+            | tr "," "\n" | grep -m1 "\"issuer\"" | cut -d"\"" -f4 || true)
+          if [ "$PROXIED_ISSUER" != "$IDP_ISSUER" ]; then
+            echo "ERROR: 经 nginx 拿到的 issuer($PROXIED_ISSUER) 与 IDP_ISSUER 不一致，.well-known 反代可能没配。"
+            exit 1
+          fi
+          echo "  经 nginx 的发现文档 issuer 一致 ✓"
+
+          echo "Step 11: 日志摘要…"
+          docker logs $BACKEND_NAME 2>&1 | grep -iE "PostgreSQL|schema|签名密钥|已注册客户端|预置账号" | tail -8 || true
+
+          echo "部署成功！"
+          echo "  认证中心前端: ${IDP_ISSUER}   （issuer 就是这个地址）"
+          echo "  后端 API 直连: http://<server>:${API_PORT}"
+          echo "  提醒: go-ac 的 OIDC_ISSUER 必须同为 ${IDP_ISSUER}"
+          '

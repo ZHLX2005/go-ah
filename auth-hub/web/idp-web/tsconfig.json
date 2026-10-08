@@ -1,20 +1,32 @@
 {
   "compilerOptions": {
-    "target": "ES2020",
-    "useDefineForClassFields": true,
-    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "module": "ESNext",
-    "skipLibCheck": true,
     "moduleResolution": "bundler",
-    "allowImportingTsExtensions": true,
-    "resolveJsonModule": true,
-    "isolatedModules": true,
-    "noEmit": true,
     "jsx": "react-jsx",
+    "types": ["vite/client"],
+
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "noFallthroughCasesInSwitch": true
+    "noFallthroughCasesInSwitch": true,
+
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true,
+
+    "baseUrl": ".",
+    "paths": { "@/*": ["src/*"] },
+
+    "composite": true,
+    /* buildinfo 放进 node_modules —— 上一版把 tsconfig.tsbuildinfo 提交进了 git，
+       那是纯构建产物，属于要清掉的包袱 */
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.tsbuildinfo",
+
+    /* 只做类型检查，不产出 .js */
+    "noEmit": true
   },
-  "include": ["src"]
+  "include": ["src", "vite.config.ts"]
 }

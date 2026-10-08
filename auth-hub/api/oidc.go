@@ -472,6 +472,36 @@ func Logout(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "logged_out"})
 		return
 	}
+
+	// 回跳地址必须在客户端注册的 post_logout_uris 白名单内。
+	// 缺了这一步,/oauth2/logout 就是一个开放重定向:任何人构造
+	// /oauth2/logout?post_logout_redirect_uri=https://evil.com
+	// 都能借认证中心的域名把用户带去任意站点。
+	// client_id 随之成为必填 —— 否则校验无从谈起。
+	clientID := c.Query("client_id")
+	if clientID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":             "invalid_request",
+			"error_description": "携带 post_logout_redirect_uri 时必须提供 client_id",
+		})
+		return
+	}
+	var logoutClient db.OAuthClient
+	if err := db.DB.Where("client_id = ?", clientID).First(&logoutClient).Error; err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":             "invalid_client",
+			"error_description": "未知的 client_id: " + clientID,
+		})
+		return
+	}
+	if !clientAllowsPostLogout(&logoutClient, postLogout) {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":             "invalid_request",
+			"error_description": "post_logout_redirect_uri 未在该客户端注册",
+		})
+		return
+	}
+
 	params := map[string]string{}
 	if state != "" {
 		params["state"] = state

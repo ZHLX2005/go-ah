@@ -1,0 +1,40 @@
+# 构建上下文裁剪。
+#
+# auth-hub 的 Go 镜像已经**不含前端**（idp-web 改由 nginx 容器托管，
+# 见 auth-hub/web/idp-web/Dockerfile），所以前端源码不出现在这个上下文里。
+
+.git
+.github
+
+# 本地数据库（绝不能进镜像：含用户、会话与 refresh_token）
+*.db
+*.db-journal
+*.db-wal
+
+# 依赖与产物
+**/node_modules
+**/dist
+
+# 本地产物与报告
+*.exe
+*.test
+coverage.out
+playwright-report
+test-results
+blob-report
+
+# 与 Go 镜像无关的模块
+auth-hub/web
+template-business-server
+oidc-cli
+e2e
+docs
+
+# 环境与编辑器
+.env
+.env.local
+*.local
+.vscode
+.idea
+.DS_Store
+Thumbs.db

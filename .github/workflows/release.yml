@@ -15,7 +15,8 @@ permissions:
   contents: write
 
 env:
-  GO_VERSION: '1.21'
+  # auth-hub 的 go.mod 要求 go >= 1.25.0（gorm.io/driver/postgres / pgx v5）
+  GO_VERSION: '1.25'
   NODE_VERSION: '22'
 
 jobs:

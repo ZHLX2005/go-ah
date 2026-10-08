@@ -106,3 +106,18 @@ type UserSession struct {
 	ExpiresAt time.Time `gorm:"index"`
 	CreatedAt time.Time
 }
+
+// SigningKeyRecord 持久化的 id_token 签名密钥（RSA 私钥，PKCS#8 PEM）。
+//
+// 为什么要落库：签名密钥原先在每个进程启动时现场生成、从不持久化，
+// 于是每次重启（容器化后重启非常频繁）都会换一把新密钥，而 kid 仍是
+// 固定的 "idp-key-1" —— 客户端缓存的 JWKS 与之一致性失配，
+// 表现为「重启后所有已签发的 id_token 一律验签失败」。
+// 落到 PG 后密钥在重启间保持稳定；多副本部署可用 IDP_SIGNING_KEY_PEM
+// 显式注入同一把，避免各副本各自生成。
+type SigningKeyRecord struct {
+	ID        uint      `gorm:"primaryKey"`
+	KeyID     string    `gorm:"uniqueIndex;size:64;not null"`
+	PEM       string    `gorm:"type:text;not null"` // PKCS#8 PEM，绝不外发
+	CreatedAt time.Time
+}

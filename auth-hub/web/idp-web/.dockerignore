@@ -1,0 +1,12 @@
+# 只需本目录：node_modules 与 dist 都在镜像内重新生成，
+# 带进去只会撑大构建上下文、还可能污染构建结果。
+node_modules
+dist
+
+# 本地产物与编辑器
+*.log
+.vite
+.vscode
+.idea
+.DS_Store
+Thumbs.db

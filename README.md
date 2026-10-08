@@ -8,7 +8,7 @@
 
 | 模块 | 角色 | 说明 |
 |---|---|---|
-| **auth-hub** | 认证中心（IdP） | 统一登录平台，提供登录 / 授权 / 令牌 / 登出 / JWKS / 发现文档 / 管理后台（Go + Gin + SQLite + React） |
+| **auth-hub** | 认证中心（IdP） | 统一登录平台，提供登录 / 授权 / 令牌 / 登出 / JWKS / 发现文档 / 管理后台（Go + Gin + PostgreSQL + React） |
 | **template-business-server** | 业务接入模板 | 业务 SPA 接入 OIDC 的**参考脚手架**，演示后端保管 token + 加密存储 + 后台自动续期 |
 | **template-oidc-cli** | 命令行客户端 | 原生 / CLI 应用接入范例：本机回环回调 + PKCE，不持有 client_secret（独立 Go module） |
 
@@ -20,9 +20,9 @@
 
 | 层 | 技术 |
 |---|---|
-| 后端 | Go 1.21+、Gin、GORM(SQLite)、golang-jwt(RS256)、argon2id、coreos/go-oidc、oauth2 |
+| 后端 | Go 1.25+、Gin、GORM(PostgreSQL)、golang-jwt(RS256)、argon2id、coreos/go-oidc、oauth2 |
 | 前端 | Vite + React 18 + TypeScript、TailwindCSS(CDN)、openid-client v5（浏览器侧 PKCE） |
-| 数据库 | SQLite 嵌入式（`idp.db` / `template.db`，无独立 DB 服务） |
+| 数据库 | **auth-hub 用 PostgreSQL**（`IDP_DSN` 指定，默认落在独立 schema `auth_hub`，与业务库共享同一实例互不干扰）；template-business-server 仍用 SQLite 嵌入式（`template.db`） |
 
 ## 2. 目录结构
 
@@ -39,7 +39,7 @@ go-ah/
 │   ├── cryptox/                   # AES-256-GCM + PBKDF2 Token 加密（Task4）
 │   ├── api/                       # 回调换token、profile、登出、刷新、加密存储、后台续期
 │   └── web/template-web/          # React 前端（/ 与 /oauth/callback）
-├── template-oidc-cli/             # 命令行 OIDC 客户端（本机回环回调 + PKCE）
+├── template-oidc-cli/                      # 命令行 OIDC 客户端（本机回环回调 + PKCE）
 │   ├── main.go
 │   ├── cmd/                       # login / whoami / logout
 │   └── internal/                  # PKCE、浏览器唤起、回环回调、加密存储、后台续期
@@ -53,8 +53,12 @@ go-ah/
 
 ```bash
 # ① 构建并启动认证中心 auth-hub（127.0.0.1:8080）
+#    IDP_DSN 指向 PostgreSQL；search_path 决定 auth-hub 落在哪个 schema。
+#    不设置时会回落到内置默认连接串（开发用），生产必须显式注入。
+export IDP_DSN='postgres://postgres:pw@127.0.0.1:5432/postgres?sslmode=disable&search_path=auth_hub'
 cd auth-hub/web/idp-web && npm install && npm run build
 cd ../../ && go run main.go
+#    auth-hub 首次启动会自动建 schema、建表、写入种子（预置账号与客户端）
 
 # ② 新开终端：构建并启动模板业务平台（127.0.0.1:8081）
 export BIZ_TOKEN_SECRET=$(openssl rand -hex 32)   # 必填：Token 加密密钥
@@ -150,14 +154,16 @@ cd template-oidc-cli && go build -o oidc-cli .
 
 ## 7. 数据表
 
-**auth-hub（idp.db）**：`users`、`oauth_clients`、`oauth_authorization_codes`（一次性，5分钟）、`oauth_refresh_tokens`（7天，登出全吊销）、`oauth_access_tokens`（10分钟，userinfo 鉴权）、`user_sessions`（8小时）
+**auth-hub（PostgreSQL schema `auth_hub`）**：`users`、`oauth_clients`、`oauth_authorization_codes`（一次性，5分钟）、`oauth_refresh_tokens`（7天，登出全吊销）、`oauth_access_tokens`（10分钟，userinfo 鉴权）、`user_sessions`（8小时）、`signing_key_records`（id_token 的 RSA 私钥，**持久化**——否则每次重启换密钥，客户端缓存的 JWKS 会失配、已签发 token 全部验签失败）
+
+> schema 由 `IDP_DSN` 的 `search_path` 决定，默认 `auth_hub`。共享 PG 实例上务必保持独立 schema：`public` 下很可能已有同名的 `users` 表，串了 AutoMigrate 会去改别人的表。
 
 **业务（template.db）**：`business_users`（按 auth-hub `sub` 关联，首次登录自动建档）、`business_sessions`（token 后端保管且**加密存储**，含 `encrypted` 标记与 access/refresh 过期时间）
 
 ## 8. 安全设计要点
 
 - **SPA 公共客户端**：不保存 `client_secret`，强制 PKCE(S256)；token 端点认证方式 `none`
-- **方案1（后端保管 token）**：code+verifier 提交业务后端换 token，token 存 SQLite，浏览器只持 HttpOnly Cookie —— 规避 localStorage XSS 风险
+- **方案1（后端保管 token）**：code+verifier 提交业务后端换 token，token 存后端数据库（模板模块用 SQLite，auth-hub 侧用 PostgreSQL），浏览器只持 HttpOnly Cookie —— 规避 localStorage XSS 风险
 - **JWT 校验全部在后端**（go-oidc 校验 iss/aud/exp/nonce/RS256 签名），前端不验签
 - **state 防 CSRF**：前端生成存 sessionStorage，回调时强校验
 - **authorization code 一次性**：重复使用返回 `invalid_grant`
@@ -233,10 +239,14 @@ cd template-oidc-cli && go build -o oidc-cli .
 
 ### 10.1 Go 单元测试
 
-两个模块各自可独立运行，使用内存 SQLite（`mode=memory&cache=shared`），不污染本地库：
+auth-hub 的测试需要一个**真实 PostgreSQL**：每个测试会在库里建一个随机命名的一次性 schema，跑完立即 `DROP`（见 `auth-hub/internal/testpg`），因此彼此隔离、也不会污染库里其它内容。未配置 `AUTH_HUB_TEST_DSN` 时这些测试会**跳过**（而不是失败）——本地没配库的人不该看到一片红。
 
 ```bash
+# auth-hub：需要 PG（连接串不能带 search_path，测试要自建 schema）
+export AUTH_HUB_TEST_DSN='postgres://postgres:pw@127.0.0.1:5432/postgres?sslmode=disable'
 cd auth-hub && go test ./... -v
+
+# 另外两个模块不需要外部依赖
 cd template-business-server && go test ./... -v
 cd template-oidc-cli && go test ./... -v
 ```
@@ -244,7 +254,7 @@ cd template-oidc-cli && go test ./... -v
 | 模块 | 覆盖内容 |
 |---|---|
 | `auth-hub/api` | PKCE S256（含 RFC 7636 官方测试向量）、redirect_uri 精确/回环通配匹配、argon2id 哈希往返与畸形输入、RS256 id_token 签发与验签（错误密钥/篡改拒绝）、JWKS 模数一致性、授权码一次性与过期、refresh_token 吊销与过期、TTL 常量、**GORM 显式 `false` 持久化回归**、client_secret 生成、token 掩码、`clientView` 不泄漏密钥 |
-| `auth-hub/db` | 种子数据（`test` 管理员、两个预置客户端）、重复 Init 幂等、旧库自动提权、表结构完整性、回环通配回调注册 |
+| `auth-hub/db` | 种子数据（`test` 管理员、三个预置客户端）、重复 Init 幂等、旧库自动提权、表结构完整性、回环通配回调注册、**schema 隔离**（防止落到 public 撞别人的表）、**签名密钥跨重启持久化**、PEM 编解码往返、`IDP_SIGNING_KEY_PEM` 优先采用、DSN 解析与非法 schema 名拒绝（SQL 注入防护）、日志密码脱敏 |
 | `template-business-server/cryptox` | 密钥强度校验、加解密往返、盐/nonce 随机性、错误密钥与篡改（GCM tag）拒绝、明文零泄漏、`IsCiphertext` 判定、PBKDF2 派生确定性 |
 | `template-business-server/api` | 加密落库（库中无明文 JWT）、读取还原、存量明文平滑迁移、密钥不匹配、续期阈值全边界（9 个 case）、续期协程启停幂等、吊销回调、解密失败自动销毁会话 |
 
@@ -529,7 +539,11 @@ if err != nil {
 
 | 服务 | 变量 | 默认 |
 |---|---|---|
-| auth-hub | `IDP_ADDR` `IDP_DB` `IDP_WEB_DIST` | `127.0.0.1:8080` `idp.db` `./web/idp-web/dist` |
+| auth-hub | `IDP_DSN` **（生产必填）** | 无默认时回落内置开发连接串（`search_path=auth_hub`）；生产必须显式注入 |
+| auth-hub | `IDP_ADDR` `IDP_WEB_DIST` | `127.0.0.1:8080` `./web/idp-web/dist` |
+| auth-hub | `IDP_ISSUER` **（生产必填）** | `http://127.0.0.1:8080`；本地 `go run` 时就是本机地址。**生产部署后必须改成前端 nginx 的对外地址**（例如 `http://<服务器IP>:8082`），原因见下方部署小节 |
+| auth-hub | `GSAC_REDIRECT_URI` `GSAC_POST_LOGOUT_URI` | 本地开发默认值；生产须设成 gs-ac 前端的真实地址（空格分隔多个，任一命中即通过） |
+| auth-hub | `IDP_SIGNING_KEY_PEM` | 空。填入固定 RSA 私钥（PKCS#8 PEM）后密钥不落库；**多副本部署必须设置**，否则各副本各自生成、互相验签失败 |
 | 业务 | `BIZ_ADDR` `BIZ_DB` `BIZ_WEB_DIST` `IDP_ISSUER` `OIDC_CLIENT_ID` `OIDC_REDIRECT_URI` `OIDC_POST_LOGOUT_URI` | `127.0.0.1:8081` `template.db` `./web/template-web/dist` `http://127.0.0.1:8080` `template-web-client` `http://127.0.0.1:8081/oauth/callback` `http://127.0.0.1:8081/` |
 | 业务 | **`BIZ_TOKEN_SECRET`**（**必填**，≥16 字符） | 无默认，缺失即拒绝启动 |
 | CLI | `OIDC_CLI_ISSUER` `OIDC_CLI_CLIENT_ID` `OIDC_CLI_STORE` `OIDC_CLI_PASSPHRASE` | `http://127.0.0.1:8080` `oidc-cli` `~/.oidc-cli/store.enc` 空 |
@@ -538,8 +552,34 @@ if err != nil {
 
 | 工作流 | 触发 | 内容 |
 |---|---|---|
-| [`ci.yml`](.github/workflows/ci.yml) | push / PR / 手动 | ① `gofmt` + `go vet`（三模块矩阵）② `go test -race` + 覆盖率 ③ 两个 React 工程 `npm ci && npm run build` ④ Playwright E2E 真实浏览器跑通 SSO 全链路 |
-| [`release.yml`](.github/workflows/release.yml) | tag `v*.*.*` / 手动 | 验证 → 构建前端 → Linux amd64/arm64 二进制（cgo 交叉编译）+ 源码包 → 自动创建 GitHub Release |
+| [`ci.yml`](.github/workflows/ci.yml) | push / PR / 手动 | ① `gofmt` + `go vet`（三模块矩阵）② `go test -race` + 覆盖率（带 PostgreSQL service container，测试自建一次性 schema）③ 两个 React 工程 `npm ci && npm run build` ④ Playwright E2E 真实浏览器跑通 SSO 全链路 |
+| [`release.yml`](.github/workflows/release.yml) | tag `v*.*.*` / 手动 | 验证 → 构建前端 → Linux amd64/arm64 二进制 + 源码包 → 自动创建 GitHub Release（template-business-server 仍依赖 sqlite 的 cgo，故需交叉工具链） |
+| [`deploy.yml`](.github/workflows/deploy.yml) | push 到 `main` / 手动 | 构建**两个**镜像（auth-hub 纯 Go + auth-hub-web nginx）→ `docker save` → SCP → 服务器 `docker load` → 共享网络 `idp-net` 上重启两容器 → 发现文档健康检查 + **issuer 注入断言** + **SPA 路由与反代贯通断言**。存储已外置到 PG，容器无状态、不挂数据卷 |
+
+**部署 auth-hub 需要配置的 secrets**：`HOST` `USERNAME` `SSH_KEY` `IDP_DSN` `IDP_ISSUER` `GSAC_REDIRECT_URI` `GSAC_POST_LOGOUT_URI`（可选 `PORT` `APP_PORT` `API_PORT` `IDP_SIGNING_KEY_PEM`）。
+
+> `IDP_ISSUER` 与 gs-ac 侧的 `OIDC_ISSUER` 必须**逐字一致**，`GSAC_REDIRECT_URI`/`GSAC_POST_LOGOUT_URI` 与 gs-ac 侧的 `OIDC_REDIRECT_URI`/`OIDC_POST_LOGOUT_URI` 也必须一致 —— 这是两个仓库之间唯一的强耦合点，配歪的症状只有一个「登录回调失败」，很难反推。两个 deploy.yml 都做了前置校验尽量提前拦住。
+
+### 部署拓扑：为什么生产用 nginx 托管前端
+
+本地开发是「Go 直接把 `web/idp-web/dist` 一起托管」（一条 `go run` 就能跑通 SSO 全链路）；
+生产则是**两个容器**：
+
+| 容器 | 角色 | 宿主端口 |
+|---|---|---|
+| `auth-hub-web`（nginx） | 托管 SPA，并把 `/api`、`/oauth2`、`/.well-known` 反代到后端 | **8082**（公网入口） |
+| `auth-hub`（Go） | 只提供 API 与 OIDC 端点，**镜像内不含前端** | 8080（直连调试用） |
+
+两边共享 docker 网络 `idp-net`，nginx 靠容器名 `auth-hub` 解析后端。
+
+> ⚠️ **这一改动会连带改变 `IDP_ISSUER` 的取值**：必须从后端端口 `8080` 改成前端 nginx 的 `8082`。
+> 因为发现文档里的 `authorization_endpoint` / `end_session_endpoint` 是「issuer + 路径」拼出来的，
+> 而这两个端点**由浏览器访问**；issuer 若仍写 8080，浏览器会绕过 nginx 直连后端容器 ——
+> 而 SPA 已不在后端镜像里，登录会 404。`deploy.yml` 第 9 步用「取 `${IDP_ISSUER}/login` 必须返回 200」
+> 专门断言这一点，因为这个错误在别处极难定位。
+>
+> nginx 配置里 `.well-known` 的反代**最容易被漏**：漏了之后所有依赖方的 OIDC 初始化都会失败，
+> 而报错只出现在调用方的日志里，从认证中心这边看还以为一切正常。
 
 **发布新版本：**
 

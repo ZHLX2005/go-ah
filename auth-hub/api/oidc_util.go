@@ -14,8 +14,14 @@ import (
 	"github.com/ZHLX2005/go-ah/auth-hub/db"
 )
 
-// Issuer IDP 的签发者标识（与 .well-known 保持一致）
-const Issuer = "http://127.0.0.1:8080"
+// Issuer IDP 的签发者标识（与 .well-known 保持一致）。
+//
+// 默认值指向本机开发地址。部署到服务器时**必须**通过 IDP_ISSUER 显式指定
+// 对外可达的地址（如 https://idp.example.com），否则：
+//   - 发现文档中的 issuer / 各端点仍指向 127.0.0.1，业务侧拉不到；
+//   - id_token 的 iss 声明与业务侧期望的 issuer 不一致，
+//     go-oidc 的 Verify 会直接报 "id token issued by a different provider"。
+var Issuer = strings.TrimRight(db.Env("IDP_ISSUER", "http://127.0.0.1:8080"), "/")
 
 // sessionCookie 全局会话 Cookie 名
 const sessionCookie = "idp_session"

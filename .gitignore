@@ -7,6 +7,9 @@ coverage.out
 # ── Node ──
 node_modules/
 dist/
+# TypeScript 增量编译产物：纯构建中间物，不该进仓库
+# （历史上 idp-web 的 tsconfig.tsbuildinfo 被提交过，已清除）
+*.tsbuildinfo
 
 # ── 本地编译产物 ──
 /auth-hub/auth-hub
