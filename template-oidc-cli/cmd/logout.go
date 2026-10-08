@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ZHLX2005/go-ah/oidc-cli/internal"
+	"github.com/ZHLX2005/go-ah/template-oidc-cli/internal"
 )
 
 // LogoutConfig logout 子命令参数

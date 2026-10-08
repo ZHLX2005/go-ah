@@ -28,7 +28,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        module: [auth-hub, oidc-cli, template-business-server]
+        module: [auth-hub, template-oidc-cli, template-business-server]
     steps:
       - uses: actions/checkout@v4
 
@@ -84,7 +84,7 @@ jobs:
   #   · linux/amd64、linux/arm64：在 ubuntu runner 上交叉编译，需 gcc 交叉工具链
   #   · darwin/*：Go 交叉编译 cgo 需要 osxcross（构建复杂度高），此处分发
   #     「源码 + 内嵌前端产物」，由使用者在 macOS 本地 go build
-  # oidc-cli 纯 Go，无 cgo，可任意交叉编译。
+  # template-oidc-cli 纯 Go，无 cgo，可任意交叉编译。
   # ─────────────────────────────────────────────────────────────
   build:
     name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
@@ -157,7 +157,7 @@ jobs:
           ( cd template-business-server && go build -trimpath \
               -ldflags "-s -w -X main.version=${VERSION}" \
               -o /tmp/go-ah-template . )
-          ( cd oidc-cli && go build -trimpath \
+          ( cd template-oidc-cli && go build -trimpath \
               -ldflags "-s -w -X main.version=${VERSION}" \
               -o /tmp/oidc-cli . )
 

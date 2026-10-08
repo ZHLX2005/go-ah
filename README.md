@@ -10,7 +10,7 @@
 |---|---|---|
 | **auth-hub** | 认证中心（IdP） | 统一登录平台，提供登录 / 授权 / 令牌 / 登出 / JWKS / 发现文档 / 管理后台（Go + Gin + SQLite + React） |
 | **template-business-server** | 业务接入模板 | 业务 SPA 接入 OIDC 的**参考脚手架**，演示后端保管 token + 加密存储 + 后台自动续期 |
-| **oidc-cli** | 命令行客户端 | 原生 / CLI 应用接入范例：本机回环回调 + PKCE，不持有 client_secret（独立 Go module） |
+| **template-oidc-cli** | 命令行客户端 | 原生 / CLI 应用接入范例：本机回环回调 + PKCE，不持有 client_secret（独立 Go module） |
 
 前后端分离架构（部署方案A）：React 打包静态资源由各自 Go 后端托管，`go run` 即同时提供 API + 页面。
 
@@ -39,7 +39,7 @@ go-ah/
 │   ├── cryptox/                   # AES-256-GCM + PBKDF2 Token 加密（Task4）
 │   ├── api/                       # 回调换token、profile、登出、刷新、加密存储、后台续期
 │   └── web/template-web/          # React 前端（/ 与 /oauth/callback）
-├── oidc-cli/                      # 命令行 OIDC 客户端（本机回环回调 + PKCE）
+├── template-oidc-cli/             # 命令行 OIDC 客户端（本机回环回调 + PKCE）
 │   ├── main.go
 │   ├── cmd/                       # login / whoami / logout
 │   └── internal/                  # PKCE、浏览器唤起、回环回调、加密存储、后台续期
@@ -117,12 +117,12 @@ cd ../../ && go run main.go
 | `GET /api/admin/refresh-tokens` | 全量 refresh_token 列表 |
 | `POST /api/admin/revoke-token` | 吊销指定令牌 |
 
-### 5.2 oidc-cli 命令行客户端
+### 5.2 template-oidc-cli 命令行客户端
 
 独立 Go module，模拟原生/命令行应用接入：临时回环 HTTP 服务接收回调 + PKCE，**不持有 client_secret**。
 
 ```bash
-cd oidc-cli && go build -o oidc-cli .
+cd template-oidc-cli && go build -o oidc-cli .
 
 ./oidc-cli login     # 唤起浏览器完成授权，令牌加密存入 ~/.oidc-cli/store.enc
 ./oidc-cli whoami    # 展示当前登录主体（自动按需续期）
@@ -238,7 +238,7 @@ cd oidc-cli && go build -o oidc-cli .
 ```bash
 cd auth-hub && go test ./... -v
 cd template-business-server && go test ./... -v
-cd oidc-cli && go test ./... -v
+cd template-oidc-cli && go test ./... -v
 ```
 
 | 模块 | 覆盖内容 |
@@ -500,7 +500,7 @@ go func() {
 _ = browser.OpenURL(authURL)
 ```
 
-完整可运行版本见本仓库 [`oidc-cli/`](oidc-cli/) —— 包含回环回调、AES-256-GCM 加密存储、后台自动续期。
+完整可运行版本见本仓库 [`template-oidc-cli/`](template-oidc-cli/) —— 包含回环回调、AES-256-GCM 加密存储、后台自动续期。
 
 ### 11.5 案例四：调用受保护接口（验证 access_token）
 

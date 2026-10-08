@@ -1,6 +1,8 @@
-// oidc-cli 是统一登录平台的命令行客户端：
+// template-oidc-cli 是统一登录平台的命令行客户端：
 // 通过本机临时 HTTP 回调 + 浏览器完成 OIDC PKCE 授权码登录，
 // token 以 AES-GCM 加密持久化到 ~/.oidc-cli/store.enc，并支持后台自动续期。
+//
+// 可执行文件名仍为 oidc-cli（见 go build -o oidc-cli）。
 //
 // 用法：
 //
@@ -16,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ZHLX2005/go-ah/oidc-cli/cmd"
+	"github.com/ZHLX2005/go-ah/template-oidc-cli/cmd"
 )
 
 const usage = `oidc-cli - 统一登录平台命令行客户端（OIDC PKCE）

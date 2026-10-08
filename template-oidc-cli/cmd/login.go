@@ -7,7 +7,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/ZHLX2005/go-ah/oidc-cli/internal"
+	"github.com/ZHLX2005/go-ah/template-oidc-cli/internal"
 )
 
 // LoginConfig login 子命令参数

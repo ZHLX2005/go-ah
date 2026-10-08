@@ -11,7 +11,7 @@ dist/
 # ── 本地编译产物 ──
 /auth-hub/auth-hub
 /template-business-server/go-ah-template
-/oidc-cli/oidc-cli
+/template-oidc-cli/oidc-cli
 
 # ── Playwright ──
 playwright-report/

@@ -1,4 +1,4 @@
-// Package internal 提供 oidc-cli 的内部实现：PKCE、浏览器唤起、
+// Package internal 提供 template-oidc-cli 的内部实现：PKCE、浏览器唤起、
 // 临时回调服务、加密存储与后台续期。
 package internal
 
