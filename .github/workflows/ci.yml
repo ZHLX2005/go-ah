@@ -14,7 +14,7 @@ concurrency:
 
 env:
   GO_VERSION: '1.21'
-  NODE_VERSION: '20'
+  NODE_VERSION: '22'
 
 jobs:
   # ─────────────────────────────────────────────────────────────
@@ -142,6 +142,12 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
+          # 仓库根目录无 go.sum（三个子模块各自独立），
+          # 依赖缓存以模块为单位指定
+          cache-dependency-path: |
+            auth-hub/go.sum
+            oidc-cli/go.sum
+            template-business-server/go.sum
 
       - uses: actions/setup-node@v4
         with:
