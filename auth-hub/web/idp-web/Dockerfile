@@ -25,17 +25,17 @@ FROM node:22-slim AS build
 WORKDIR /app
 
 # 依赖清单先拷：源码变动时这一层仍命中缓存，省掉重复安装
-COPY package.json package-lock.json ./
+#
+# 只拷 package.json，不拷 package-lock.json —— 这是刻意为之：
+# 仓库里的 lock 是在 Windows 上生成的，npm/cli#4828 导致它只收录了
+# win32 平台的原生可选依赖，linux 的 rollup-gnu / esbuild-linux
+# 条目整个缺失。npm ci 按锁文件装，装完 vite 直接找不到 rollup
+# 原生模块。在容器内（Linux）用 npm install 现场解析依赖，平台一定正确。
+COPY package.json ./
 
-# 依赖安装：npm ci 严格按 lock 装，可复现。
 # 末尾断言原生包到位 —— 缺了就在这一层失败，而不是拖到 vite 阶段报一个
 # 「Cannot find module @rollup/rollup-linux-x64-gnu」这种看不出所以然的错。
-#
-# 注意：lock 文件必须与 package.json 同步。两者不同步时 npm ci 会直接
-# EUSAGE 退出（这是好事，比静默装错版本强），用
-#   npm install --package-lock-only
-# 重新生成即可 —— 本仓库此前就因此挂过一次。
-RUN npm ci --no-audit --no-fund \
+RUN npm install --no-audit --no-fund \
  && test -d node_modules/@rollup/rollup-linux-x64-gnu \
  && test -d node_modules/@esbuild/linux-x64
 
