@@ -1,0 +1,12 @@
+# 编译产物
+oidc-cli
+oidc-cli.exe
+/bin/
+
+# 本地敏感数据（加密凭据切勿提交）
+*.enc
+.oidc-cli/
+
+# 测试与覆盖率
+*.out
+coverage.html

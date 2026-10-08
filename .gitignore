@@ -1,0 +1,30 @@
+# ── Go ──
+*.db
+*.exe
+*.test
+coverage.out
+
+# ── Node ──
+node_modules/
+dist/
+
+# ── 本地编译产物 ──
+/auth-hub/auth-hub
+/template-business-server/go-ah-template
+/oidc-cli/oidc-cli
+
+# ── Playwright ──
+playwright-report/
+test-results/
+blob-report/
+
+# ── 本地环境 ──
+.env
+.env.local
+*.local
+
+# ── 编辑器 / 系统 ──
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

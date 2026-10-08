@@ -1,0 +1,1 @@
+{"root":["./src/api.ts","./src/main.tsx","./src/oidc.ts","./src/types.ts","./src/pages/CallbackPage.tsx","./src/pages/HomePage.tsx"],"version":"5.9.3"}

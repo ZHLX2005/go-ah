@@ -1,0 +1,226 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+# 同一分支的重复触发只保留最后一次，节省 CI 资源
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: '1.21'
+  NODE_VERSION: '20'
+
+jobs:
+  # ─────────────────────────────────────────────────────────────
+  # 1. Go 代码检查：gofmt / go vet
+  # ─────────────────────────────────────────────────────────────
+  lint:
+    name: Lint (gofmt + go vet)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [auth-hub, oidc-cli, template-business-server]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: ${{ matrix.module }}/go.sum
+
+      - name: gofmt 检查
+        working-directory: ${{ matrix.module }}
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::以下文件未通过 gofmt 格式化："
+            echo "$unformatted"
+            echo "本地执行修复：gofmt -w ."
+            exit 1
+          fi
+          echo "gofmt 检查通过"
+
+      - name: go vet
+        working-directory: ${{ matrix.module }}
+        run: go vet ./...
+
+  # ─────────────────────────────────────────────────────────────
+  # 2. Go 单元测试（-race + 覆盖率）
+  # ─────────────────────────────────────────────────────────────
+  test:
+    name: Test (Go ${{ matrix.module }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [auth-hub, oidc-cli, template-business-server]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: ${{ matrix.module }}/go.sum
+
+      - name: 下载依赖
+        working-directory: ${{ matrix.module }}
+        run: go mod download
+
+      - name: 运行测试（含竞态检测与覆盖率）
+        working-directory: ${{ matrix.module }}
+        # CGO：sqlite 驱动需要；-race 需要 cgo 工具链
+        env:
+          CGO_ENABLED: '1'
+        run: go test -race -count=1 -covermode=atomic -coverprofile=coverage.out ./...
+
+      - name: 覆盖率摘要
+        working-directory: ${{ matrix.module }}
+        run: go tool cover -func=coverage.out | tail -n 1
+
+      - name: 上传覆盖率报告
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.module }}
+          path: ${{ matrix.module }}/coverage.out
+          if-no-files-found: ignore
+
+  # ─────────────────────────────────────────────────────────────
+  # 3. 前端构建（两个 React 工程）
+  # ─────────────────────────────────────────────────────────────
+  web:
+    name: Web build (${{ matrix.app }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - app: idp-web
+            dir: auth-hub/web/idp-web
+          - app: template-web
+            dir: template-business-server/web/template-web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: ${{ matrix.dir }}/package-lock.json
+
+      - name: 安装依赖
+        working-directory: ${{ matrix.dir }}
+        run: npm ci
+
+      - name: 类型检查 + 构建
+        working-directory: ${{ matrix.dir }}
+        run: npm run build
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-${{ matrix.app }}
+          path: ${{ matrix.dir }}/dist
+          if-no-files-found: error
+
+  # ─────────────────────────────────────────────────────────────
+  # 4. Playwright 端到端测试（真实浏览器跑通 SSO 全链路）
+  # ─────────────────────────────────────────────────────────────
+  e2e:
+    name: E2E (Playwright)
+    runs-on: ubuntu-latest
+    needs: [web]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      # ── 复用 web job 的构建产物，避免重复编译前端 ──
+      - name: 下载前端构建产物
+        uses: actions/download-artifact@v4
+        with:
+          name: web-idp-web
+          path: auth-hub/web/idp-web/dist
+
+      - name: 下载业务前端构建产物
+        uses: actions/download-artifact@v4
+        with:
+          name: web-template-web
+          path: template-business-server/web/template-web/dist
+
+      # ── 安装 Playwright 浏览器（含系统依赖） ──
+      - name: 安装 Playwright 依赖
+        working-directory: e2e
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      # ── 启动认证中心 auth-hub ──
+      - name: 启动 auth-hub
+        working-directory: auth-hub
+        run: |
+          go mod download
+          go build -o /tmp/auth-hub .
+          nohup /tmp/auth-hub > /tmp/auth-hub.log 2>&1 &
+
+      # ── 启动模板业务平台 ──
+      - name: 启动 template-business-server
+        working-directory: template-business-server
+        env:
+          BIZ_TOKEN_SECRET: ${{ secrets.BIZ_TOKEN_SECRET || 'ci-only-secret-not-for-production-use-32b' }}
+        run: |
+          go mod download
+          go build -o /tmp/biz-server .
+          nohup /tmp/biz-server > /tmp/biz-server.log 2>&1 &
+
+      - name: 等待服务就绪
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8080/.well-known/openid-configuration > /dev/null \
+               && curl -sf http://127.0.0.1:8081/api/session > /dev/null; then
+              echo "两个服务均已就绪"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::服务启动超时"
+          echo "===== auth-hub 日志 ====="
+          cat /tmp/auth-hub.log || true
+          echo "===== business 日志 ====="
+          cat /tmp/biz-server.log || true
+          exit 1
+
+      - name: 运行 E2E 测试
+        working-directory: e2e
+        run: npm test
+
+      - name: 失败时输出服务日志
+        if: failure()
+        run: |
+          echo "===== auth-hub 日志 ====="
+          cat /tmp/auth-hub.log || true
+          echo "===== business 日志 ====="
+          cat /tmp/biz-server.log || true
+
+      - name: 上传 Playwright 报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            e2e/playwright-report
+            e2e/test-results
+          if-no-files-found: ignore
+          retention-days: 7

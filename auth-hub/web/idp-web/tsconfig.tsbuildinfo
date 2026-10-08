@@ -1,0 +1,1 @@
+{"root":["./src/adminApi.ts","./src/api.ts","./src/main.tsx","./src/types.ts","./src/pages/AdminClients.tsx","./src/pages/AdminLayout.tsx","./src/pages/AdminTokens.tsx","./src/pages/AdminUsers.tsx","./src/pages/ConsentPage.tsx","./src/pages/LoginPage.tsx","./src/pages/LogoutPage.tsx"],"version":"5.9.3"}

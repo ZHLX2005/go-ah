@@ -1,0 +1,18 @@
+{
+  "name": "oidc-pkce-e2e",
+  "version": "1.0.0",
+  "private": true,
+  "description": "统一登录平台 + 模板业务平台的 Playwright 端到端测试",
+  "type": "module",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "test:oidc": "playwright test tests/oidc-pkce-flow.spec.ts",
+    "test:admin": "playwright test tests/admin-panel.spec.ts",
+    "test:token": "playwright test tests/token-revoke.spec.ts",
+    "report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.40.0"
+  }
+}
