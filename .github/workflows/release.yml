@@ -234,9 +234,14 @@ jobs:
 
           echo "产物清单："
           ls -lh "${NAME}.tar.gz"
-          echo "包内顶层结构："
-          tar -tzf "${NAME}.tar.gz" | head -20
-          echo "包内文件总数：$(tar -tzf "${NAME}.tar.gz" | wc -l)"
+
+          # 注意：在 set -o pipefail 下不能写成 `tar -tzf x | head -n 20`，
+          # head 提前关闭管道会让 tar 收到 SIGPIPE（stdout: write error），
+          # 进而把整个步骤判为失败。这里改为先落盘再截取。
+          tar -tzf "${NAME}.tar.gz" > /tmp/listing.txt
+          echo "包内文件总数：$(wc -l < /tmp/listing.txt)"
+          echo "包内顶层结构（前 15 行）："
+          sed -n '1,15p' /tmp/listing.txt
 
       - uses: actions/upload-artifact@v4
         with:
