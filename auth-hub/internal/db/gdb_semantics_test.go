@@ -15,13 +15,20 @@ import (
 // **用错会静默写错数据**。一旦某次升级改了它们，症状是"清空过期时间点不动"
 // 和"邀请码次数扣不动"，两者都不会报错，只会让人怀疑自己的操作。
 //
-// 这个测试不碰数据库：MapOrStructToMapDeep 是把 Data(...) 的参数转成
-// 待写入 map 的那一步，正是"值有没有被丢掉/被改型"发生的地方。
+// 这个测试不碰数据库：MapOrStructToMapDeep 是把 Data(...) 的参数转成待写入
+// map 的那一步（gdb.ConvertDataForRecord 的第一行就是它），正是"值有没有被
+// 丢掉/被改型"发生的地方。真正的落库结果由 logic/invite 的 PG 集成测试覆盖
+// （见 redeem_pg_test.go 的 ClearExpires 用例）。
 func TestDataConversionSemantics(t *testing.T) {
 	t.Run("nil 会被保留并写成 NULL", func(t *testing.T) {
 		// 用途：把 invitation_codes.expires_at 改成"长期有效"（置 NULL）。
 		// 若这里 key 消失了，UPDATE 语句里根本不会出现 expires_at ——
 		// 旧值原样留着，调用方却以为已经清空了。
+		//
+		// 第二个参数是 gf 的 omitempty，**不是**"是否转换时间类型"
+		// （源码：MapOrStructToMapDeep(value, omitempty) 内部直接传给
+		// gconv.Map 的 MapOption.OmitEmpty）。这里照抄真实调用点
+		// ConvertDataForRecord 传的 true，测的才是生产路径。
 		for name, value := range map[string]any{
 			"无类型 nil":  nil,
 			"类型化 nil":  (*time.Time)(nil),
@@ -34,14 +41,18 @@ func TestDataConversionSemantics(t *testing.T) {
 				t.Errorf("%s：expires_at 被丢弃，清空过期时间会静默失效", name)
 				continue
 			}
-			if got != nil {
-				// 零值时间必须仍以时间类型传下去：gdb 会把零值时间转成 NULL，
-				// 而如果它在这里就被转成了字符串，落库的会是一串无意义文本。
-				if _, ok := got.(time.Time); !ok {
-					if _, ok := got.(gtime.Time); !ok {
-						t.Errorf("%s：值被改型为 %T，期望时间类型或 nil", name, got)
-					}
+			switch {
+			case value == nil:
+				// 无类型 nil 必须原样是 nil：把它"贴心"地换成零值时间，
+				// 语义就从"清空"变成了"写入一个具体时刻"。
+				if got != nil {
+					t.Errorf("%s：nil 被改型为 %T（%v）", name, got, got)
 				}
+			case !isTimeLike(got):
+				// 值必须仍是时间类型：gdb 的下一站 ConvertValueForField 靠类型
+				// 才能把零值/空指针翻成 SQL NULL。若这里已被转成字符串，
+				// 落库的会是一串无意义文本。
+				t.Errorf("%s：值被改型为 %T，期望四种时间类型之一", name, got)
 			}
 		}
 	})
@@ -59,4 +70,18 @@ func TestDataConversionSemantics(t *testing.T) {
 			t.Errorf("Counter = %+v, 期望 {used_count 1}", counter)
 		}
 	})
+}
+
+// isTimeLike 判断转换后的值是否仍是时间类型。
+//
+// 四种都要认：gf 在这四种之间派生（源码 gdb_func.go 的 MapOrStructToMapDeep
+// 里那个 switch 列举的正是这四种 + gjson）。曾经只写了后两种值类型，
+// 结果 `(*time.Time)(nil)` 走不通 —— 它保留为指针，而不是被解引用成值；
+// 本地没跑这个二进制，直到 CI 才暴露。
+func isTimeLike(v any) bool {
+	switch v.(type) {
+	case time.Time, *time.Time, gtime.Time, *gtime.Time:
+		return true
+	}
+	return false
 }
