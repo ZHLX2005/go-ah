@@ -1,5 +1,12 @@
 import { test, expect } from '@playwright/test'
-import { BIZ, IDP, TEST_USER, loginWithPKCE, assertServicesUp } from './helpers'
+import {
+  BIZ,
+  IDP,
+  TEST_USER,
+  loginWithPKCE,
+  resetBrowserSession,
+  assertServicesUp,
+} from './helpers'
 
 /**
  * 用例组 2：IDP 管理后台
@@ -62,7 +69,9 @@ test.describe('IDP 管理后台', () => {
   test('用户列表展示活跃会话与关联 refresh_token', async ({ page }) => {
     // 先跑一次业务登录，保证有会话与令牌数据
     await loginWithPKCE(page)
-    await page.context().clearCookies()
+    // 必须走 resetBrowserSession 而不是直接 clearCookies：业务 SPA 会在
+    // 发现未登录时自动跳授权，抢走后面的 goto（见 helpers 里的说明）
+    await resetBrowserSession(page)
 
     await loginAsAdmin(page, '/admin/users')
 

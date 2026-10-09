@@ -58,8 +58,12 @@ func TestInit_CreatesSchemaAndTables(t *testing.T) {
 		consts.TableSigningKey,
 	}
 	for _, tbl := range tables {
-		var row map[string]any
-		if err := db.Instance().Model(tbl).Ctx(ctx).Limit(1).Scan(&row); err != nil {
+		// 用 Count 而不是 Scan(&map[string]any)：gf 的 Scan 只接受
+		// struct / *struct / []struct / []*struct，传 map 会直接报
+		// "element of parameter pointer for function Scan should type of
+		// struct/*struct/[]struct/[]*struct"（GORM 是允许 map 的）。
+		// 这里只想确认"表建出来了且能查"，不关心内容，Count 语义更准。
+		if _, err := db.Instance().Model(tbl).Ctx(ctx).Count(); err != nil {
 			t.Errorf("表 %s 不可查询: %v", tbl, err)
 		}
 	}

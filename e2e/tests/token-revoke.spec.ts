@@ -1,5 +1,12 @@
 import { test, expect } from '@playwright/test'
-import { BIZ, IDP, loginWithPKCE, fetchBizProfile, assertServicesUp } from './helpers'
+import {
+  BIZ,
+  IDP,
+  loginWithPKCE,
+  resetBrowserSession,
+  fetchBizProfile,
+  assertServicesUp,
+} from './helpers'
 
 /**
  * 用例组 3：令牌生命周期（刷新与吊销）
@@ -87,7 +94,9 @@ test.describe('令牌生命周期（刷新与吊销）', () => {
     expect(ok).toBe(200)
 
     // 2) 以管理员身份登录管理后台并吊销全部有效 refresh_token
-    await page.context().clearCookies()
+    //    走 resetBrowserSession：直接 clearCookies 会被业务 SPA 的自动授权
+    //    跳转抢走下面的 goto（同一个竞态，见 helpers 里的说明）
+    await resetBrowserSession(page)
     await page.goto(`${IDP}/login?return_to=${encodeURIComponent('/admin/tokens')}`, {
       waitUntil: 'domcontentloaded',
     })

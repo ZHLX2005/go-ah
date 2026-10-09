@@ -59,6 +59,23 @@ export async function loginWithPKCE(
   }
 }
 
+/**
+ * 先离开业务站点，再清 Cookie。
+ *
+ * 不能在业务页面上直接 `clearCookies()`：业务 SPA 检测到未登录会**自动发起
+ * OIDC 授权跳转**。清完 cookie 后紧跟的 `page.goto(IDP/login...)` 会被这个
+ * 自动跳转抢走，表现为两种症状：
+ *   - `page.goto: net::ERR_ABORTED`（导航被后发起的导航顶掉）
+ *   - 莫名其妙落到「模板业务平台 / template-web-client」的授权确认页 ——
+ *     因为顶掉 goto 的那次跳转带的是**业务应用**的 authorize 参数
+ * 这是竞态，时快时慢：同一个用例可能这轮过、下轮挂。
+ * 先去 about:blank 让业务页面销毁，再清 cookie，就没有竞争者了。
+ */
+export async function resetBrowserSession(page: Page) {
+  await page.goto('about:blank')
+  await page.context().clearCookies()
+}
+
 /** 读取业务侧登录态（直接调受保护接口） */
 export async function fetchBizProfile(page: Page) {
   return page.evaluate(async () => {
