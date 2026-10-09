@@ -41,12 +41,12 @@ go-ah/
 │   │   ├── controller/            # HTTP 处理层（消费 logic，只做映射与状态码）
 │   │   ├── dao/  model/           # 表访问对象 / entity(读) 与 do(写)
 │   │   ├── db/                    # 连接、schema 隔离、内嵌 DDL、种子（驱动在此注册）
-│   │   ├── logic/                 # admin / oidc / session / signing / user
+│   │   ├── logic/                 # admin / invite / oidc / session / signing / user
 │   │   ├── middleware/            # 管理端鉴权
 │   │   ├── router/                # 全部路由的唯一清单 + 适配器
 │   │   └── testpg/                # 一次性 PG schema（测试隔离）
 │   ├── manifest/config/config.yaml
-│   └── web/idp-web/               # React 前端（/login /consent /logout /admin）
+│   └── web/idp-web/               # React 前端（/login /register /consent /logout /admin）
 ├── template-business-server/      # 模板业务平台（接入 Demo）
 │   ├── main.go                    # 入口：gcmd 命令 + 装配
 │   ├── api/
@@ -114,6 +114,10 @@ cd ../../ && go run main.go
 6. 【刷新用户信息】【刷新 Token】可分别验证受保护接口与 refresh_token 链路
 7. 【统一登出】→ 业务会话销毁 → 跳 auth-hub 销毁全局会话 + **吊销全部 refresh_token** → 回到业务首页（未登录态）
 
+**注册链路（可选，需管理员先发码）**：在 auth-hub 登录页点【用邀请码注册】（会带上原授权请求的 `return_to`）
+→ 填入管理员在 `/admin/invites` 生成的邀请码 + 账号/邮箱/口令 → **注册成功即登录**，
+继续走第 3～5 步的授权确认并进入业务平台，无需再登一次。详见 §5.3。
+
 页面截图见 `docs/screenshots/`。
 
 ## 5. OIDC 端点（auth-hub）
@@ -128,6 +132,7 @@ cd ../../ && go run main.go
 | `GET /.well-known/openid-configuration` | 发现文档 |
 | `GET /.well-known/jwks.json` | RSA 公钥（id_token RS256 验签） |
 | `POST /api/login` `GET /api/me` `POST /api/logout` `GET/POST /api/consent` | auth-hub 前端页面配套 API |
+| `POST /api/register` | **自助注册（需邀请码）**：校验并核销邀请码 → 建档 → 直接下发会话，见 §5.3 |
 
 ### 5.1 管理后台 API（需管理员会话）
 
@@ -145,6 +150,13 @@ cd ../../ && go run main.go
 | `DELETE /api/admin/clients/:id` | 删除客户端（内置客户端受保护，禁止删除） |
 | `GET /api/admin/refresh-tokens` | 全量 refresh_token 列表 |
 | `POST /api/admin/revoke-token` | 吊销指定令牌 |
+| `GET /api/admin/invites` | 注册邀请码列表（`?status=active\|disabled\|expired\|exhausted\|all`，**含派生状态与剩余次数**） |
+| `POST /api/admin/invites` | 生成邀请码（可配次数与有效期，留空 = 长期有效） |
+| `PUT /api/admin/invites/{id}` | 修改邀请码（**未给出的字段不改**；`expires_at` 传空串 = 改为长期有效） |
+| `DELETE /api/admin/invites/{id}` | 删除邀请码（**保留使用明细**，见 §5.3） |
+| `GET /api/admin/invites/{id}/usages` | 某张码的使用明细：谁、在哪一刻、用哪个账号 |
+
+`GET /api/admin/users` 额外返回 `last_login_at`（从未登录为 `null`）。
 
 ### 5.2 template-oidc-cli 命令行客户端
 
@@ -165,6 +177,45 @@ cd template-oidc-cli && go build -o oidc-cli .
 | 存储 | AES-256-GCM 加密，密钥由 **本机指纹 + 可选口令** 经 PBKDF2 派生，权限 `0600`，目录 `0700` |
 | 自动续期 | 登录后常驻协程，距过期 < 2 分钟自动续期；失败则清空本地会话并登出 |
 
+### 5.3 自助注册与邀请码
+
+认证中心**没有开放注册入口**。`POST /api/register` 必须携带一张"此刻仍能核销"的邀请码，
+而邀请码只能由管理员在 `/admin/invites` 生成 —— 即"注册权限"被收敛成了"发码权限"。
+
+**注册链路**（`POST /api/register`，表单字段 `invite_code / username / password / email / return_to`）：
+
+| 步 | 动作 | 失败原因码（前端按它给文案） |
+|---|---|---|
+| 1 | 邀请码非空 | `invite_not_found`（"邀请码不能为空"） |
+| 2 | 账号/口令/邮箱格式校验 | `invalid_username` `invalid_password` `invalid_email` |
+| 3 | 账号占用预检 | `username_taken`（409） |
+| 4 | **核销邀请码 + 建档 + 写使用明细**（同一事务） | `invite_not_found` `invite_disabled` `invite_expired` `invite_exhausted` |
+| 5 | 建全局会话 → 下发 Cookie → 按 `return_to` 继续授权流程 | — |
+
+刻意的顺序设计：**所有能在核销之前问清楚的问题都在前面问完**。邀请码是消耗品，
+一次注定失败的注册不该浪费它 —— 账号被占用、口令太短这类错误返回时，
+`used_count` 必须原封不动（有测试钉住这一点）。
+
+**并发安全**来自第 4 步的**条件更新**，而不是"先查后写"：
+
+```sql
+UPDATE invitation_codes SET used_count = used_count + 1
+WHERE id = ? AND used_count < max_uses
+```
+
+受影响行数为 0 → 这张码已被抢完 → 整个事务回滚（连同已经写了一半的账号）。
+换成"先 SELECT 看次数、再 UPDATE"则两个并发请求都会读到未满而双双放行 ——
+典型的检查-使用竞态，只在真的有人同时点注册时复现。
+
+**使用明细与删除**：`Delete` 只删码本身，**保留使用明细**（明细里冗余存了 `code` 字符串），
+所以删码之后仍查得出"这个账号当初是用哪张码注册进来的"。连明细一起删，就等于抹掉了
+"他是被谁邀请进来的"这条唯一线索。
+
+**邀请码本身**：`inv_` + 12 字节 CSPRNG（base64url，共 20 字符）。用随机码而不是自增/时间戳：
+**可猜的邀请码等于没有邀请码**。失败原因确实区分了"不存在/停用/过期/用完"（注册页要靠它给出
+可操作的提示），也就是说这个端点会确认"你猜的这串是真码"——接受这个信息泄露，是因为码有
+96 bit 随机性，做成枚举预言机也需要先猜中一个 2^96 空间里的值。真正的防护不是模糊报错，而是码的熵。
+
 ## 6. 业务平台接口
 
 | 接口 | 说明 |
@@ -179,7 +230,10 @@ cd template-oidc-cli && go build -o oidc-cli .
 
 ## 7. 数据表
 
-**auth-hub（PostgreSQL schema `auth_hub`）**：`users`、`oauth_clients`、`oauth_authorization_codes`（一次性，5分钟）、`oauth_refresh_tokens`（7天，登出全吊销）、`oauth_access_tokens`（10分钟，userinfo 鉴权）、`user_sessions`（8小时）、`signing_key_records`（id_token 的 RSA 私钥，**持久化**——否则每次重启换密钥，客户端缓存的 JWKS 会失配、已签发 token 全部验签失败）
+**auth-hub（PostgreSQL schema `auth_hub`）**：`users`（含 `last_login_at`，**注册即登录也会写入**）、`oauth_clients`、`oauth_authorization_codes`（一次性，5分钟）、`oauth_refresh_tokens`（7天，登出全吊销）、`oauth_access_tokens`（10分钟，userinfo 鉴权）、`user_sessions`（8小时）、`signing_key_records`（id_token 的 RSA 私钥，**持久化**——否则每次重启换密钥，客户端缓存的 JWKS 会失配、已签发 token 全部验签失败）、`invitation_codes`（注册邀请码：`max_uses / used_count / expires_at / enabled`）、`invitation_code_usages`（使用明细，**删码后保留**）
+
+> 新增列（如 `users.last_login_at`）不能只靠 `CREATE TABLE IF NOT EXISTS`：对**已存在**的表它什么都不做。
+> 所以 `schema.sql` 里新列一律写成 `ALTER TABLE … ADD COLUMN IF NOT EXISTS`，并有一条测试拿它当哨兵。
 
 > schema 由 `IDP_DSN` 的 `search_path` 决定，默认 `auth_hub`。共享 PG 实例上务必保持独立 schema：`public` 下很可能已有同名的 `users` 表，串了 AutoMigrate 会去改别人的表。
 
@@ -194,6 +248,7 @@ cd template-oidc-cli && go build -o oidc-cli .
 - **authorization code 一次性**：重复使用返回 `invalid_grant`
 - **redirect_uri 白名单**：未注册的回调地址直接 400；**原生/CLI 客户端支持回环通配**（`http://127.0.0.1:*/callback`，RFC 8252）
 - **密码 argon2id** 哈希存储，常量时间比较
+- **注册需要邀请码**：没有开放注册入口，注册权限被收敛成"发码权限"（码只由管理员生成）；码为 `inv_` + 96 bit CSPRNG，不可猜；核销走 `UPDATE … WHERE used_count < max_uses` 条件更新，并发下只放行到配额上限；账号被占用/参数非法等失败**不消耗配额**（校验全在核销之前，且核销与建档在同一事务里回滚）
 - **统一登出**：全局会话 + 业务会话 + 全部 refresh_token 三清
 - **Token 加密持久化（Task4）**（详见 §9）
 - **后台自动续期（Task4）**（详见 §9）
@@ -261,6 +316,9 @@ cd template-oidc-cli && go build -o oidc-cli .
 | 10 | CLI `login → whoami → logout` 全链路，本地存储无明文 JWT | ✅ |
 | 11 | 业务/CLI token 全部 AES-256-GCM 加密落库，全库无明文 JWT | ✅ |
 | 12 | 距过期 < 2 分钟自动续期；吊销后自动销毁会话并登出 | ✅ |
+| 13 | 管理员生成邀请码 → 受邀者凭码自助注册 → **注册即登录**并完成 OIDC 授权进入业务平台 | ✅ |
+| 14 | 邀请码配额递减、使用明细可查（谁/何时/哪个账号）；过期、停用、用完、账号占用均被明确拒绝 | ✅ |
+| 15 | 一次性邀请码并发核销只成功一次；被拒的那次不消耗配额（事务整体回滚） | ✅ |
 
 ### 10.1 Go 单元测试
 
@@ -280,9 +338,10 @@ cd template-oidc-cli && go test ./... -v
 |---|---|
 | `auth-hub/internal/logic/oidc` | PKCE S256（含 RFC 7636 官方测试向量）、redirect_uri 精确/回环通配匹配、授权码一次性与过期、refresh_token 吊销与过期、`sub` 派生、登出回跳白名单（开放重定向防护） |
 | `auth-hub/internal/logic/signing` | RS256 id_token 签发与验签、声明完整性（iss/sub/aud/nonce/exp/iat/auth_time）、scope 与 nonce 开关、错误密钥与**篡改拒绝**、JWKS 公钥与私钥一致性、PEM（PKCS#8 / PKCS#1）往返 |
-| `auth-hub/internal/db` | 种子数据（`test` 管理员、三个预置客户端）、重复 `Init` 幂等、gs-ac 回调白名单随重启同步、**schema 隔离**（防止落到 public 撞别人的表）、DSN 解析与**非法 schema 名拒绝**（标识符拼接注入防护）、内嵌 DDL 覆盖全部 7 张表、日志密码脱敏 |
-| `auth-hub/internal/router` | 装配层黑盒（**不需要数据库**）：路由清单可达、管理端 10 条路由全部被鉴权拦住、四种响应形状（业务信封 / OIDC 协议错 / 裸对象 / 无 `code` 的失败体）逐一核对 |
-| `auth-hub/internal/{logic/admin,controller/admin,model/entity,utility}` | client_secret 生成与掩码、错误种类到状态码的映射、`clientView` 不泄漏密钥、空列表序列化为 `[]`、argon2id 哈希往返、`*bool` 三态语义 |
+| `auth-hub/internal/db` | 种子数据（`test` 管理员、三个预置客户端）、重复 `Init` 幂等、gs-ac 回调白名单随重启同步、**schema 隔离**（防止落到 public 撞别人的表）、DSN 解析与**非法 schema 名拒绝**（标识符拼接注入防护）、内嵌 DDL 覆盖全部 9 张表、`users.last_login_at` 这类**新增列靠 ALTER 补上**（`CREATE TABLE IF NOT EXISTS` 对已存在的表什么都不做）、日志密码脱敏 |
+| `auth-hub/internal/logic/invite` | 邀请码生成（前缀/长度/20 字符、20 次不重复、默认 1 次、次数与有效期上下限、过去时间被拒）、**部分更新语义**（只改备注时次数与有效期不动、`ClearExpires` 真的把列写成 NULL）、次数不能改到小于已用次数（相等允许 → 干净的"已用完"）、四种失败分支（不存在/停用/过期/用完）、**并发核销**（8 个 goroutine 抢 1 次性码恰好成功 1 个；3 次性码恰好成功 3 个）、**归档失败必须回滚配额**（重复账号不扣次数也不留明细）、删码保留明细、状态过滤与 `entity.Status` 一致 |
+| `auth-hub/internal/router` | 装配层黑盒（**不需要数据库**）：路由清单可达、管理端 **15** 条路由全部被鉴权拦住、四种响应形状（业务信封 / OIDC 协议错 / 裸对象 / 无 `code` 的失败体）逐一核对、注册缺邀请码与账号格式非法的信封与**校验顺序**（格式校验先于核销，否则一次注定失败的注册会浪费邀请码） |
+| `auth-hub/internal/{logic/admin,controller/admin,model/entity,utility}` | client_secret 生成与掩码、错误种类到状态码的映射、`clientView` 不泄漏密钥、空列表序列化为 `[]`、argon2id 哈希往返、`*bool` 三态语义、**邀请码状态判定只有一份**（停用 → 过期 → 用完的优先级，`IsRedeemable` 与 `Status` 必须互为充要，否则会出现「列表显示可用、注册却被拒」）、`last_login_at` 为 nil 表示"从未登录"（不能塞成零值时间） |
 | `template-business-server/api` | 加密落库（库中无明文 JWT）、读取还原、存量明文平滑迁移、密钥不匹配、续期阈值全边界（9 个 case）、续期协程启停幂等、吊销回调、解密失败自动销毁会话；装配层黑盒核对八个端点与**响应契约字样**（TTL 必须是 `10m`/`168h`/`2m`，不能变成 `10m0s`） |
 | `template-business-server/db` | 建表幂等、用户按 sub 查询/新建/资料同步、会话 upsert（插入后回填主键、二次写不新增行）、**过期会话在 SQL 层就查不出来**、过期清理与活跃会话扫描、bool ↔ INTEGER 与时间列往返 |
 | `template-business-server/cryptox` | 密钥强度校验、加解密往返、盐/nonce 随机性、错误密钥与篡改（GCM tag）拒绝、明文零泄漏、`IsCiphertext` 判定、PBKDF2 派生确定性 |
@@ -302,7 +361,7 @@ go test -coverprofile=coverage.out ./... && go tool cover -func=coverage.out | t
 
 ```bash
 cd e2e && npm install
-npm test                     # 24 个用例，串行约 1.5 分钟
+npm test                     # 27 个用例，串行约 2 分钟
 ```
 
 前置条件：两个服务已启动（见 §3）。离线环境可用 `CHROMIUM_PATH` 复用已缓存的浏览器。
@@ -311,9 +370,10 @@ npm test                     # 24 个用例，串行约 1.5 分钟
 |---|---|---|
 | `oidc-pkce-flow.spec.ts` | 6 | 授权请求参数完整性、错误密码、完整登录链路、会话持久化、未授权 401、统一登出 |
 | `admin-panel.spec.ts` | 10 | 未登录跳转、管理员鉴权、用户/客户端/令牌三面板、客户端 CRUD、内置客户端保护、secret 不下发 |
+| `invite-register.spec.ts` | 3 | 生成码 → 凭码注册 → **注册即登录并走完 OIDC**进业务平台、配额递减与使用明细、停用/启用/删除立即生效、用完与账号占用有明确提示且**不消耗配额** |
 | `token-revoke.spec.ts` | 8 | TTL 与加密标记、手动刷新、管理员吊销、`invalid_grant` 三处（刷新/授权码/未知令牌）、userinfo 鉴权、安全状态接口 |
 
-**当前结果：`24 passed`**。详细设计与排错见 [`e2e/README.md`](e2e/README.md)。
+**当前结果：`27 passed`**。详细设计与排错见 [`e2e/README.md`](e2e/README.md)。
 
 ## 11. 案例代码：三步接入 go-ah 单点登录
 
@@ -618,4 +678,7 @@ git tag v1.0.0 && git push origin v1.0.0
 ## 14. 非目标（本次不实现）
 
 管理后台之外的后台功能、HTTPS、MFA/短信、细粒度 RBAC、分布式会话/集群。
+
+**开放注册**同样是刻意不做的：注册必须有邀请码（§5.3）。没有"任何人填个邮箱就能进来"的入口，
+就不需要额外做邮箱验证、限流、反机器人那一整套。
 

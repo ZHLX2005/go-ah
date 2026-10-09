@@ -50,6 +50,9 @@ var routeInventory = []endpoint{
 	{"POST", "/api/login"},
 	{"GET", "/api/me"},
 	{"POST", "/api/logout"},
+	// 自助注册。它是唯一匿名可写的业务端点，必须在清单里 ——
+	// 漏掉它就等于"这条入口挂了没人知道"，而它挂了意味着没人能注册。
+	{"POST", "/api/register"},
 
 	{"GET", "/api/consent"},
 	{"POST", "/api/consent"},
@@ -70,6 +73,12 @@ var routeInventory = []endpoint{
 	{"DELETE", "/api/admin/clients/1"},
 	{"GET", "/api/admin/refresh-tokens"},
 	{"POST", "/api/admin/revoke-token"},
+
+	{"GET", "/api/admin/invites"},
+	{"POST", "/api/admin/invites"},
+	{"PUT", "/api/admin/invites/1"},
+	{"DELETE", "/api/admin/invites/1"},
+	{"GET", "/api/admin/invites/1/usages"},
 }
 
 // adminRoutes 必须落在鉴权分组里的端点
@@ -84,6 +93,12 @@ var adminRoutes = []endpoint{
 	{"DELETE", "/api/admin/clients/1"},
 	{"GET", "/api/admin/refresh-tokens"},
 	{"POST", "/api/admin/revoke-token"},
+
+	{"GET", "/api/admin/invites"},
+	{"POST", "/api/admin/invites"},
+	{"PUT", "/api/admin/invites/1"},
+	{"DELETE", "/api/admin/invites/1"},
+	{"GET", "/api/admin/invites/1/usages"},
 }
 
 func TestHTTPContract(t *testing.T) {
@@ -139,6 +154,38 @@ func TestHTTPContract(t *testing.T) {
 		}
 		if str(body["message"]) != "账号和密码不能为空" {
 			t.Errorf("message = %q", str(body["message"]))
+		}
+	})
+
+	t.Run("注册缺邀请码返回业务信封 400", func(t *testing.T) {
+		// 本项目最容易踩的一条：把 /api/register 当成普通注册端点，
+		// 直接 POST 账号口令。这时必须回一句明确的"邀请码不能为空"，
+		// 而不是让请求一路走到核销才炸。
+		res, body := postJSON(t, base+"/api/register",
+			`{"username":"newbie","password":"password123","email":"newbie@example.com"}`)
+		if res.StatusCode != http.StatusBadRequest {
+			t.Fatalf("状态码 = %d, 期望 400", res.StatusCode)
+		}
+		if num(body["code"]) != 1 || str(body["error"]) != "invite_not_found" {
+			t.Errorf("信封不符: %v", body)
+		}
+		if str(body["message"]) != "邀请码不能为空" {
+			t.Errorf("message = %q", str(body["message"]))
+		}
+	})
+
+	t.Run("注册时账号格式不合法先于邀请码核销被拦下", func(t *testing.T) {
+		// 顺序是刻意的：邀请码是消耗品，一次注定失败的注册不该浪费它。
+		// 账号格式这类"自己能问清楚"的问题必须在核销之前问完。
+		// 这里刻意带了一个不存在的邀请码 —— 如果校验顺序反了，
+		// 响应会变成邀请码相关的错误（或因为没库而 500），而不是这条。
+		res, body := postJSON(t, base+"/api/register",
+			`{"username":"ab","password":"password123","email":"newbie@example.com","invite_code":"inv_notarealcode0"}`)
+		if res.StatusCode != http.StatusBadRequest {
+			t.Fatalf("状态码 = %d, 期望 400", res.StatusCode)
+		}
+		if str(body["error"]) != "invalid_username" {
+			t.Errorf("error = %q, 期望 invalid_username（说明账号校验没在核销之前跑）", str(body["error"]))
 		}
 	})
 

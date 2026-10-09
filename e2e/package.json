@@ -9,6 +9,7 @@
     "test:headed": "playwright test --headed",
     "test:oidc": "playwright test tests/oidc-pkce-flow.spec.ts",
     "test:admin": "playwright test tests/admin-panel.spec.ts",
+    "test:invite": "playwright test tests/invite-register.spec.ts",
     "test:token": "playwright test tests/token-revoke.spec.ts",
     "report": "playwright show-report"
   },

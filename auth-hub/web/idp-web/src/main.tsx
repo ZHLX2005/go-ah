@@ -4,13 +4,15 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { ToastProvider, Loading } from '@/ui'
 import AdminLayout from '@/layout/AdminLayout'
 import LoginPage from '@/pages/Login'
+import RegisterPage from '@/pages/Register'
 import ConsentPage from '@/pages/Consent'
 import LogoutPage from '@/pages/Logout'
 import './app.css'
 
-// 管理台三个面板按需加载：认证页（登录/授权/登出）是终端用户唯一会碰到的
+// 管理台面板按需加载：认证页（登录/注册/授权/登出）是终端用户唯一会碰到的
 // 界面，首屏必须快；管理台只有管理员进，没必要拖累前者。
 const AdminUsers = lazy(() => import('@/pages/admin/Users'))
+const AdminInvites = lazy(() => import('@/pages/admin/Invites'))
 const AdminClients = lazy(() => import('@/pages/admin/Clients'))
 const AdminTokens = lazy(() => import('@/pages/admin/Tokens'))
 
@@ -22,8 +24,9 @@ createRoot(host).render(
     <BrowserRouter>
       <ToastProvider>
         <Routes>
-          {/* ── IDP 认证页面（终端用户会看到的三个）── */}
+          {/* ── IDP 认证页面（终端用户会看到的几个）── */}
           <Route path="/login" element={<LoginPage />} />
+          <Route path="/register" element={<RegisterPage />} />
           <Route path="/consent" element={<ConsentPage />} />
           <Route path="/logout" element={<LogoutPage />} />
 
@@ -35,6 +38,14 @@ createRoot(host).render(
               element={
                 <Suspense fallback={<Loading />}>
                   <AdminUsers />
+                </Suspense>
+              }
+            />
+            <Route
+              path="invites"
+              element={
+                <Suspense fallback={<Loading />}>
+                  <AdminInvites />
                 </Suspense>
               }
             />

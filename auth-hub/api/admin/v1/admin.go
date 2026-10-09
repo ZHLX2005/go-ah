@@ -39,15 +39,16 @@ type AdminUsersReq struct {
 
 // AdminUserRow 用户列表行
 type AdminUserRow struct {
-	ID            int64     `json:"id"`
-	Username      string    `json:"username"`
-	Email         string    `json:"email"`
-	Nickname      string    `json:"nickname"`
-	IsAdmin       bool      `json:"is_admin"`
-	CreatedAt     time.Time `json:"created_at"`
-	SessionCount  int64     `json:"session_count"`
-	RefreshCount  int64     `json:"refresh_token_count"`
-	ActiveRefresh int64     `json:"active_refresh_count"`
+	ID            int64      `json:"id"`
+	Username      string     `json:"username"`
+	Email         string     `json:"email"`
+	Nickname      string     `json:"nickname"`
+	IsAdmin       bool       `json:"is_admin"`
+	CreatedAt     time.Time  `json:"created_at"`
+	LastLoginAt   *time.Time `json:"last_login_at"`
+	SessionCount  int64      `json:"session_count"`
+	RefreshCount  int64      `json:"refresh_token_count"`
+	ActiveRefresh int64      `json:"active_refresh_count"`
 }
 
 // AdminUsersRes 用户列表响应
@@ -208,6 +209,114 @@ type AdminRevokeTokenRes struct {
 	Code     int    `json:"code"`
 	Message  string `json:"message"`
 	Affected int64  `json:"affected"`
+}
+
+// ── 注册邀请码 ──────────────────────────────────────────────────────────────
+
+// AdminInvitesReq GET /api/admin/invites
+type AdminInvitesReq struct {
+	g.Meta `path:"/api/admin/invites" method:"get" tags:"Admin" summary:"邀请码列表"`
+	// Status 按状态过滤：active | disabled | expired | exhausted；留空/ all 为全部。
+	// 过滤放在后端做：状态是由 enabled/expires_at/used_count 三者算出来的，
+	// 交给前端过滤意味着"哪些算过期"要在两处各判断一次。
+	Status string `json:"status" in:"query"`
+}
+
+// AdminInviteView 邀请码视图。
+//
+// Remaining 与 Status 都是后端算好的派生值，不指望前端自己算：
+// 列表上显示的"还剩 2 次""已过期"必须与注册接口的放行规则**同源**，
+// 否则会出现"列表说可用、注册却被拒"这种自相矛盾的现象。
+type AdminInviteView struct {
+	ID        int64      `json:"id"`
+	Code      string     `json:"code"`
+	MaxUses   int        `json:"max_uses"`
+	UsedCount int        `json:"used_count"`
+	Remaining int        `json:"remaining"`
+	Status    string     `json:"status"`
+	ExpiresAt *time.Time `json:"expires_at"`
+	Enabled   bool       `json:"enabled"`
+	Note      string     `json:"note"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
+}
+
+// AdminInvitesRes 邀请码列表响应
+type AdminInvitesRes struct {
+	Code int               `json:"code"`
+	Data []AdminInviteView `json:"data"`
+}
+
+// AdminCreateInviteReq POST /api/admin/invites
+type AdminCreateInviteReq struct {
+	g.Meta `path:"/api/admin/invites" method:"post" tags:"Admin" summary:"生成邀请码"`
+	// MaxUses 可用次数；留空或 <=0 取默认值（1 次）
+	MaxUses int `json:"max_uses"`
+	// ExpiresAt 过期时间，接受 gtime 能识别的多种写法（RFC3339、
+	// "2006-01-02 15:04:05"、"2006-01-02" 等）；留空表示长期有效。
+	ExpiresAt string `json:"expires_at"`
+	// Note 备注：发给谁、做什么用。邀请码列表里唯一能区分两张码的信息。
+	Note string `json:"note"`
+}
+
+// AdminCreateInviteRes 生成结果（返回完整行，便于前端直接插入列表）
+type AdminCreateInviteRes struct {
+	Code int             `json:"code"`
+	Data AdminInviteView `json:"data"`
+}
+
+// AdminUpdateInviteReq PUT /api/admin/invites/{id}
+//
+// 指针字段语义是"不改"：可写字段里有 max_uses，若用值类型，客户端漏传
+// 就会被解释成"改成 0"→ 配额被悄悄重置。ExpiresAt 用 *string 而不是
+// *time.Time，是为了区分"没传"（nil，不改）与"传了空串"（改成长期有效）。
+type AdminUpdateInviteReq struct {
+	g.Meta    `path:"/api/admin/invites/{id}" method:"put" tags:"Admin" summary:"修改邀请码"`
+	ID        int64   `json:"id" in:"path" v:"required"`
+	MaxUses   *int    `json:"max_uses"`
+	ExpiresAt *string `json:"expires_at"`
+	Enabled   *bool   `json:"enabled"`
+	Note      *string `json:"note"`
+}
+
+// AdminUpdateInviteRes 修改结果
+type AdminUpdateInviteRes struct {
+	Code int             `json:"code"`
+	Data AdminInviteView `json:"data"`
+}
+
+// AdminDeleteInviteReq DELETE /api/admin/invites/{id}
+type AdminDeleteInviteReq struct {
+	g.Meta `path:"/api/admin/invites/{id}" method:"delete" tags:"Admin" summary:"删除邀请码"`
+	ID     int64 `json:"id" in:"path" v:"required"`
+}
+
+// AdminDeleteInviteRes 删除结果
+type AdminDeleteInviteRes struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+// AdminInviteUsagesReq GET /api/admin/invites/{id}/usages
+type AdminInviteUsagesReq struct {
+	g.Meta `path:"/api/admin/invites/{id}/usages" method:"get" tags:"Admin" summary:"邀请码使用明细"`
+	ID     int64 `json:"id" in:"path" v:"required"`
+}
+
+// AdminInviteUsageRow 使用明细行：一条 = 某次注册用掉了某张码
+type AdminInviteUsageRow struct {
+	ID       int64     `json:"id"`
+	Code     string    `json:"code"`
+	UserID   int64     `json:"user_id"`
+	Username string    `json:"username"`
+	Email    string    `json:"email"`
+	UsedAt   time.Time `json:"used_at"`
+}
+
+// AdminInviteUsagesRes 使用明细响应
+type AdminInviteUsagesRes struct {
+	Code int                   `json:"code"`
+	Data []AdminInviteUsageRow `json:"data"`
 }
 
 // ── 失败响应 ────────────────────────────────────────────────────────────────

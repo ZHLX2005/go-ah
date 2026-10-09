@@ -9,6 +9,7 @@ package db_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/gogf/gf/v2/os/gctx"
 
@@ -56,6 +57,10 @@ func TestInit_CreatesSchemaAndTables(t *testing.T) {
 		consts.TableOAuthAccessToken,
 		consts.TableUserSession,
 		consts.TableSigningKey,
+		// 邀请码两张表：注册链路唯一新增的存储。它们漏建的症状特别隐蔽 ——
+		// 服务照常启动，直到有人真的拿邀请码注册才报"表不存在"。
+		consts.TableInvitationCode,
+		consts.TableInvitationCodeUsage,
 	}
 	for _, tbl := range tables {
 		// 用 Count 而不是 Scan(&map[string]any)：gf 的 Scan 只接受
@@ -66,6 +71,21 @@ func TestInit_CreatesSchemaAndTables(t *testing.T) {
 		if _, err := db.Instance().Model(tbl).Ctx(ctx).Count(); err != nil {
 			t.Errorf("表 %s 不可查询: %v", tbl, err)
 		}
+	}
+
+	// 新增列单独查一次：schema.sql 用 CREATE TABLE IF NOT EXISTS 建 users，
+	// 对**已存在**的表它什么都不做，所以 last_login_at 必须靠 ALTER TABLE
+	// ADD COLUMN IF NOT EXISTS 补上。这里的选择列就是那个 ALTER 的哨兵 ——
+	// 少了它，升级部署后"最后登录"列会永远报错。
+	var u struct {
+		LastLoginAt *time.Time
+	}
+	if err := db.Instance().Model(consts.TableUser).Ctx(ctx).
+		Where("username", consts.SeedUsername).Scan(&u); err != nil {
+		t.Fatalf("users.last_login_at 不可查询（ALTER TABLE 漏了？）: %v", err)
+	}
+	if u.LastLoginAt != nil {
+		t.Errorf("预置账号从未登录过时 last_login_at 应为 NULL, got %v", u.LastLoginAt)
 	}
 }
 

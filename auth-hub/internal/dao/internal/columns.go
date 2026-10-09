@@ -13,6 +13,7 @@ type UserColumns struct {
 	Email        string
 	Nickname     string
 	IsAdmin      string
+	LastLoginAt  string
 	CreatedAt    string
 	UpdatedAt    string
 }
@@ -22,7 +23,8 @@ func UserColumnsOf() UserColumns {
 	return UserColumns{
 		Id: "id", Username: "username", PasswordHash: "password_hash",
 		Email: "email", Nickname: "nickname", IsAdmin: "is_admin",
-		CreatedAt: "created_at", UpdatedAt: "updated_at",
+		LastLoginAt: "last_login_at",
+		CreatedAt:   "created_at", UpdatedAt: "updated_at",
 	}
 }
 
@@ -146,5 +148,47 @@ type SigningKeyColumns struct {
 func SigningKeyColumnsOf() SigningKeyColumns {
 	return SigningKeyColumns{
 		Id: "id", KeyID: "key_id", Pem: "pem", CreatedAt: "created_at",
+	}
+}
+
+// InvitationCodeColumns invitation_codes 表列名
+type InvitationCodeColumns struct {
+	Id        string
+	Code      string
+	MaxUses   string
+	UsedCount string
+	ExpiresAt string
+	Enabled   string
+	CreatedBy string
+	Note      string
+	CreatedAt string
+	UpdatedAt string
+}
+
+// InvitationCodeColumnsOf 返回 invitation_codes 表的列名集合
+func InvitationCodeColumnsOf() InvitationCodeColumns {
+	return InvitationCodeColumns{
+		Id: "id", Code: "code", MaxUses: "max_uses", UsedCount: "used_count",
+		ExpiresAt: "expires_at", Enabled: "enabled", CreatedBy: "created_by",
+		Note: "note", CreatedAt: "created_at", UpdatedAt: "updated_at",
+	}
+}
+
+// InvitationCodeUsageColumns invitation_code_usages 表列名
+type InvitationCodeUsageColumns struct {
+	Id       string
+	CodeID   string
+	Code     string
+	UserID   string
+	Username string
+	Email    string
+	UsedAt   string
+}
+
+// InvitationCodeUsageColumnsOf 返回 invitation_code_usages 表的列名集合
+func InvitationCodeUsageColumnsOf() InvitationCodeUsageColumns {
+	return InvitationCodeUsageColumns{
+		Id: "id", CodeID: "code_id", Code: "code", UserID: "user_id",
+		Username: "username", Email: "email", UsedAt: "used_at",
 	}
 }

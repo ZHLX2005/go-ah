@@ -46,6 +46,19 @@ func Register(ctx context.Context, s *ghttp.Server, webDist string) {
 		group.GET("/api/me", call[authapi.MeReq](authC.Me))
 		group.POST("/api/logout", call[authapi.LogoutReq](authC.Logout))
 
+		// 自助注册。它是**唯一**不需要已有身份的写入口，门槛是邀请码：
+		// 码的校验与核销都在 logic/invite 里，这里只负责装配。
+		//
+		// 为什么不放进管理分组：注册不是管理员在做的事，是受邀者自己在做 ——
+		// 挂上 RequireAdmin 等于把注册入口关掉。
+		//
+		// 关于枚举：失败原因确实区分了"不存在/停用/过期/用完"（注册页要靠它
+		// 给出可操作的提示），也就是说这个端点会确认"你猜的这串是真码"。
+		// 接受这个信息泄露，是因为码有 96 bit 随机性 —— 做成枚举预言机也需要
+		// 先猜中一个 2^96 空间里的值，收益为零。真正的防护在这里不是模糊
+		// 报错，而是码的熵。
+		group.POST("/api/register", call[authapi.RegisterReq](authC.Register))
+
 		// 授权确认页
 		group.GET("/api/consent", call[oidcapi.ConsentInfoReq](oidcC.ConsentInfo))
 		group.POST("/api/consent", call[oidcapi.ConsentReq](oidcC.Consent))
@@ -78,6 +91,13 @@ func Register(ctx context.Context, s *ghttp.Server, webDist string) {
 
 		group.GET("/api/admin/refresh-tokens", adminCall[adminapi.AdminRefreshTokensReq](adminC.RefreshTokens))
 		group.POST("/api/admin/revoke-token", adminCall[adminapi.AdminRevokeTokenReq](adminC.RevokeToken))
+
+		// 注册邀请码（自助注册的门槛由管理员发放）
+		group.GET("/api/admin/invites", adminCall[adminapi.AdminInvitesReq](adminC.Invites))
+		group.POST("/api/admin/invites", adminCall[adminapi.AdminCreateInviteReq](adminC.CreateInvite))
+		group.PUT("/api/admin/invites/{id}", adminCall[adminapi.AdminUpdateInviteReq](adminC.UpdateInvite))
+		group.DELETE("/api/admin/invites/{id}", adminCall[adminapi.AdminDeleteInviteReq](adminC.DeleteInvite))
+		group.GET("/api/admin/invites/{id}/usages", adminCall[adminapi.AdminInviteUsagesReq](adminC.InviteUsages))
 	})
 
 	registerWeb(ctx, s, webDist)

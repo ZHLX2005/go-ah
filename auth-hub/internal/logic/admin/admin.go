@@ -30,6 +30,7 @@ type UserRow struct {
 	Nickname      string
 	IsAdmin       bool
 	CreatedAt     time.Time
+	LastLoginAt   *time.Time
 	SessionCount  int64
 	RefreshCount  int64
 	ActiveRefresh int64
@@ -63,7 +64,7 @@ func ListUsers(ctx context.Context) ([]UserRow, error) {
 		}
 		out = append(out, UserRow{
 			Id: u.Id, Username: u.Username, Email: u.Email, Nickname: u.Nickname,
-			IsAdmin: u.IsAdmin, CreatedAt: u.CreatedAt,
+			IsAdmin: u.IsAdmin, CreatedAt: u.CreatedAt, LastLoginAt: u.LastLoginAt,
 			SessionCount: int64(sessCount), RefreshCount: int64(rtCount), ActiveRefresh: int64(activeCount),
 		})
 	}

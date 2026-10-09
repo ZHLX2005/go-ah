@@ -50,6 +50,18 @@ export default function UsersPage() {
       title: '创建时间',
       render: (u) => <span className="dim nowrap">{fmtTime(u.created_at)}</span>,
     },
+    {
+      key: 'last_login_at',
+      title: '最后登录',
+      render: (u) =>
+        u.last_login_at ? (
+          <span className="dim nowrap">{fmtTime(u.last_login_at)}</span>
+        ) : (
+          // 与"登录过一次"区分开：从未登录是账号可能根本没被用过的信号，
+          // 显示成空白或零值时间会让人以为只是没读出来。
+          <span className="dim">从未登录</span>
+        ),
+    },
     { key: 'session_count', title: '会话', align: 'right', render: (u) => u.session_count },
     { key: 'refresh_token_count', title: '令牌', align: 'right', render: (u) => u.refresh_token_count },
     { key: 'active_refresh_count', title: '活跃令牌', align: 'right', render: (u) => u.active_refresh_count },

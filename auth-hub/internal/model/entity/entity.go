@@ -10,14 +10,15 @@ import "time"
 
 // User 统一登录平台的用户账号
 type User struct {
-	Id           int64     `json:"id"           description:"用户ID"`
-	Username     string    `json:"username"     description:"登录账号"`
-	PasswordHash string    `json:"-"            description:"argon2id 密码哈希"`
-	Email        string    `json:"email"        description:"邮箱"`
-	Nickname     string    `json:"nickname"     description:"昵称"`
-	IsAdmin      bool      `json:"is_admin"     description:"是否管理员"`
-	CreatedAt    time.Time `json:"created_at"   description:"创建时间"`
-	UpdatedAt    time.Time `json:"updated_at"   description:"更新时间"`
+	Id           int64      `json:"id"            description:"用户ID"`
+	Username     string     `json:"username"      description:"登录账号"`
+	PasswordHash string     `json:"-"             description:"argon2id 密码哈希"`
+	Email        string     `json:"email"         description:"邮箱"`
+	Nickname     string     `json:"nickname"      description:"昵称"`
+	IsAdmin      bool       `json:"is_admin"      description:"是否管理员"`
+	LastLoginAt  *time.Time `json:"last_login_at" description:"最后登录时间（从未登录为空）"`
+	CreatedAt    time.Time  `json:"created_at"    description:"创建时间"`
+	UpdatedAt    time.Time  `json:"updated_at"    description:"更新时间"`
 }
 
 // OAuthClient 注册在 IdP 的 OIDC 客户端（业务方）
@@ -103,4 +104,88 @@ type SigningKeyRecord struct {
 	KeyID     string    `json:"key_id"     description:"密钥ID（写入 JWT 头的 kid）"`
 	Pem       string    `json:"-"          description:"PKCS#8 PEM 私钥，绝不外发"`
 	CreatedAt time.Time `json:"created_at" description:"创建时间"`
+}
+
+// InvitationCode 注册邀请码。
+//
+// 「还能不能用」由三件事共同决定：enabled、expires_at、used_count 与
+// max_uses 的关系。判断规则写成下面的方法而不是散在各处 —— 管理端要显示
+// 状态、注册端要决定放不放行，两处各写一遍必然出现"列表显示可用、注册却
+// 被拒"这类自相矛盾的现象。
+type InvitationCode struct {
+	Id        int64      `json:"id"         description:"主键"`
+	Code      string     `json:"code"       description:"邀请码"`
+	MaxUses   int        `json:"max_uses"   description:"最多可核销次数"`
+	UsedCount int        `json:"used_count" description:"已核销次数"`
+	ExpiresAt *time.Time `json:"expires_at" description:"过期时间（为空表示长期有效）"`
+	Enabled   bool       `json:"enabled"    description:"是否启用"`
+	CreatedBy int64      `json:"created_by" description:"创建者（管理员用户ID）"`
+	Note      string     `json:"note"       description:"备注（发给谁、用途）"`
+	CreatedAt time.Time  `json:"created_at" description:"创建时间"`
+	UpdatedAt time.Time  `json:"updated_at" description:"更新时间"`
+}
+
+// 邀请码状态（管理端列表直接展示，不必让前端重算一遍规则）
+const (
+	// InvitationStatusActive 可核销
+	InvitationStatusActive = "active"
+	// InvitationStatusDisabled 已被管理员停用
+	InvitationStatusDisabled = "disabled"
+	// InvitationStatusExpired 已过期
+	InvitationStatusExpired = "expired"
+	// InvitationStatusExhausted 次数已用完
+	InvitationStatusExhausted = "exhausted"
+)
+
+// IsExpired 是否已过期（未设置过期时间视为永不过期）
+func (c *InvitationCode) IsExpired(now time.Time) bool {
+	return c.ExpiresAt != nil && now.After(*c.ExpiresAt)
+}
+
+// IsExhausted 次数是否已用完
+func (c *InvitationCode) IsExhausted() bool { return c.UsedCount >= c.MaxUses }
+
+// IsRedeemable 当前是否可用于注册
+func (c *InvitationCode) IsRedeemable(now time.Time) bool {
+	return c.Enabled && !c.IsExpired(now) && !c.IsExhausted()
+}
+
+// Remaining 剩余可用次数（用完后为 0，不会是负数）
+func (c *InvitationCode) Remaining() int {
+	if n := c.MaxUses - c.UsedCount; n > 0 {
+		return n
+	}
+	return 0
+}
+
+// Status 当前状态。
+//
+// 判断顺序是"哪个原因更该被人先看到"：停用是管理员自己做的决定，
+// 过期是时间到了，用完了是发出去的码被领光了 —— 三者的处置动作不同，
+// 所以不能都笼统归成"不可用"。
+func (c *InvitationCode) Status(now time.Time) string {
+	switch {
+	case !c.Enabled:
+		return InvitationStatusDisabled
+	case c.IsExpired(now):
+		return InvitationStatusExpired
+	case c.IsExhausted():
+		return InvitationStatusExhausted
+	default:
+		return InvitationStatusActive
+	}
+}
+
+// InvitationCodeUsage 邀请码使用明细：一条 = 某次注册用掉了某张码。
+//
+// Code 是冗余字段（跟 code_id 一起存）：删掉邀请码后，这条明细仍然能回答
+// "这个账号当初是用哪张码注册进来的"。
+type InvitationCodeUsage struct {
+	Id       int64     `json:"id"       description:"主键"`
+	CodeID   int64     `json:"code_id"  description:"邀请码ID"`
+	Code     string    `json:"code"     description:"邀请码（冗余留存，删码后仍可追溯）"`
+	UserID   int64     `json:"user_id"  description:"注册出的用户ID"`
+	Username string    `json:"username" description:"注册出的账号"`
+	Email    string    `json:"email"    description:"注册时填写的邮箱"`
+	UsedAt   time.Time `json:"used_at"  description:"核销时间"`
 }

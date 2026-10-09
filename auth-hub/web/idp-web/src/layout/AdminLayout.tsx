@@ -80,10 +80,12 @@ export default function AdminLayout() {
         <nav className="nav">
           <div className="nav__group">管理台</div>
           <NavItem to="/admin/users">用户</NavItem>
+          <NavItem to="/admin/invites">邀请码</NavItem>
           <NavItem to="/admin/clients">OIDC 客户端</NavItem>
           <NavItem to="/admin/tokens">令牌</NavItem>
           <div className="nav__group">认证页面</div>
           <NavItem to="/login">登录页</NavItem>
+          <NavItem to="/register">注册页</NavItem>
         </nav>
       </aside>
 

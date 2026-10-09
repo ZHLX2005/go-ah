@@ -1,4 +1,4 @@
-// Package v1 定义认证（登录/登录态/登出）接口的请求与响应结构。
+// Package v1 定义认证（登录/注册/登录态/登出）接口的请求与响应结构。
 //
 // 响应统一是 {code, data} 信封：前端据此判断成败，
 // **code 字段不能省**（没有 code 时前端的统一拆包逻辑会把响应当成裸对象）。
@@ -25,6 +25,36 @@ type LoginData struct {
 type LoginRes struct {
 	Code int       `json:"code"`
 	Data LoginData `json:"data"`
+}
+
+// RegisterReq POST /api/register
+//
+// 唯一的自助注册入口，且**必须**带邀请码。注册是全平台唯一"还没有身份就能
+// 创建身份"的动作，邀请码就是它唯一的门槛 —— 所以这个字段不是可选项，
+// 缺失一律拒绝，而不是"没有码就当成普通注册放过去"。
+type RegisterReq struct {
+	g.Meta     `path:"/api/register" method:"post" tags:"Auth" summary:"凭邀请码自助注册"`
+	Username   string `json:"username"`
+	Password   string `json:"password"`
+	Email      string `json:"email"`
+	InviteCode string `json:"invite_code"`
+	ReturnTo   string `json:"return_to"`
+}
+
+// RegisterData 注册成功的数据体。
+//
+// 与 LoginData 同形（账号/昵称/回跳地址）：注册成功后要接着走登录后同一条
+// 链路（回到原 OIDC 授权请求），前端因此可以复用同一段处理逻辑。
+type RegisterData struct {
+	Username string `json:"username"`
+	Nickname string `json:"nickname"`
+	ReturnTo string `json:"return_to"`
+}
+
+// RegisterRes 注册响应（code=0 表示成功）
+type RegisterRes struct {
+	Code int          `json:"code"`
+	Data RegisterData `json:"data"`
 }
 
 // MeReq GET /api/me

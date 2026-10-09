@@ -15,8 +15,14 @@ import type {
   ClientRow,
   ConsentInfo,
   CreatedClient,
+  InviteInput,
+  InviteRow,
+  InviteUpdateInput,
+  InviteUsageRow,
   LoginResult,
   RefreshTokenRow,
+  RegisterInput,
+  RegisterResult,
   SessionRow,
   UserInfo,
   UserRow,
@@ -36,6 +42,17 @@ export const authApi = {
       password,
       return_to: returnTo,
     }),
+
+  /**
+   * 凭邀请码自助注册。成功即登录（后端下发会话 Cookie），返回与登录同形的
+   * {username, nickname, return_to}。
+   *
+   * 失败时 error 字段是**可分支的原因码**，注册页据此给出针对性提示：
+   *   invite_not_found / invite_disabled / invite_expired / invite_exhausted
+   *   username_taken / invalid_username / invalid_password / invalid_email
+   * 只说一句「注册失败」的话，用户唯一能做的就是整页重填一遍。
+   */
+  register: (payload: RegisterInput) => http.post<RegisterResult>('/api/register', payload),
 
   /** 当前登录态；未登录时 data 为 null 而不是报错 */
   me: () => http.get<UserInfo | null>('/api/me'),
@@ -90,4 +107,20 @@ export const adminApi = {
     http.get<RefreshTokenRow[]>('/api/admin/refresh-tokens', { status }),
 
   revokeToken: (id: number) => http.post<null>('/api/admin/revoke-token', { id }),
+
+  // ── 注册邀请码 ────────────────────────────────────────────────────────────
+
+  /** 邀请码列表；status 传 'all' 或省略为全部（过滤在后端做，见 ListByStatus） */
+  invites: (status: string) => http.get<InviteRow[]>('/api/admin/invites', { status }),
+
+  createInvite: (payload: InviteInput) => http.post<InviteRow>('/api/admin/invites', payload),
+
+  /** 未给出的字段不改；expires_at 传空串 = 改为长期有效 */
+  updateInvite: (id: number, payload: InviteUpdateInput) =>
+    http.put<InviteRow>(`/api/admin/invites/${id}`, payload),
+
+  deleteInvite: (id: number) => http.del<null>(`/api/admin/invites/${id}`),
+
+  /** 使用明细：谁在哪一刻用这张码注册了哪个账号 */
+  inviteUsages: (id: number) => http.get<InviteUsageRow[]>(`/api/admin/invites/${id}/usages`),
 }

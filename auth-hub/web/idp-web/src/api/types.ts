@@ -33,6 +33,22 @@ export interface LoginResult {
   return_to: string
 }
 
+/** 注册表单的三项输入 + 邀请码（全平台唯一的自助注册入口） */
+export interface RegisterInput {
+  username: string
+  password: string
+  email: string
+  invite_code: string
+  return_to: string
+}
+
+/**
+ * POST /api/register 成功后的 data —— 与 LoginResult **同形**。
+ * 注册成功即登录，之后走与登录完全相同的链路（回到原授权请求），
+ * 所以前端可以复用同一段处理逻辑。
+ */
+export type RegisterResult = LoginResult
+
 /**
  * GET /api/consent 的响应 —— **裸对象，不是信封**。
  * 展示授权确认页所需的一切：申请方、当前账号、申请的 scope。
@@ -84,6 +100,8 @@ export interface UserRow {
   nickname: string
   is_admin: boolean
   created_at: string
+  /** 从未登录过时为 null —— 与「登录过」是两件事，不能用零值时间糊过去 */
+  last_login_at: string | null
   session_count: number
   refresh_token_count: number
   active_refresh_count: number
@@ -146,6 +164,83 @@ export interface CreatedClient {
   client: ClientRow
   client_secret?: string
   notice?: string
+}
+
+// ══ 注册邀请码 ══════════════════════════════════════════════════════════════
+
+/**
+ * 邀请码状态。由后端算好（entity.InvitationCode.Status），
+ * 前端**不要**自己从 max_uses / used_count / expires_at 推 ——
+ * 推出来的规则一旦与注册接口的放行规则不一致，就会出现
+ * 「列表显示可用、注册却被拒」这种自相矛盾的界面。
+ */
+export type InviteStatus = 'active' | 'disabled' | 'expired' | 'exhausted'
+
+/** GET /api/admin/invites 的行 */
+export interface InviteRow {
+  id: number
+  code: string
+  max_uses: number
+  used_count: number
+  /** 剩余可用次数（后端算好，用完后为 0） */
+  remaining: number
+  status: InviteStatus
+  /** null = 长期有效 */
+  expires_at: string | null
+  enabled: boolean
+  note: string
+  created_at: string
+  updated_at: string
+}
+
+/** 生成邀请码的请求体 */
+export interface InviteInput {
+  /** 省略或 <=0 时后端取默认值（1 次） */
+  max_uses?: number
+  /** datetime-local 的值（形如 2026-10-10T15:30）；空串 = 长期有效 */
+  expires_at?: string
+  note?: string
+}
+
+/**
+ * 修改邀请码的请求体：**未给出的字段不改**。
+ *
+ * expires_at 用 undefined 与空串区分两种意图：
+ *   undefined → 不改过期时间；"" → 改为长期有效；其他 → 改为该时间。
+ * 少了这个区分，"清空过期时间"就与"不动它"无法表达。
+ */
+export interface InviteUpdateInput {
+  max_uses?: number
+  expires_at?: string
+  enabled?: boolean
+  note?: string
+}
+
+/** GET /api/admin/invites/:id/usages 的行：一条 = 某次注册用掉了某张码 */
+export interface InviteUsageRow {
+  id: number
+  code: string
+  user_id: number
+  username: string
+  email: string
+  used_at: string
+}
+
+/** 状态过滤选项（与后端 ListByStatus 接受的取值一致） */
+export const INVITE_STATUS_OPTIONS = [
+  { value: 'all', label: '全部' },
+  { value: 'active', label: '可用' },
+  { value: 'disabled', label: '已停用' },
+  { value: 'expired', label: '已过期' },
+  { value: 'exhausted', label: '已用完' },
+] as const
+
+/** 状态 → 展示文案（列表与详情弹窗共用同一份） */
+export const INVITE_STATUS_LABEL: Record<InviteStatus, string> = {
+  active: '可用',
+  disabled: '已停用',
+  expired: '已过期',
+  exhausted: '已用完',
 }
 
 export const TOKEN_STATUS_OPTIONS = [

@@ -29,6 +29,12 @@ CREATE TABLE IF NOT EXISTS "users" (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS "idx_users_username" ON "users" ("username");
 
+-- 最后登录时间。用 ALTER 而不是把它加进上面的 CREATE TABLE：
+-- 线上库的 users 表早就存在，CREATE TABLE IF NOT EXISTS 对已存在的表
+-- **什么都不做**，所以写进 CREATE 里的新列在老库上永远不会出现 ——
+-- 症状是"新部署的代码查一个不存在的列"，只在连了老库时才炸。
+ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "last_login_at" TIMESTAMPTZ;
+
 -- OIDC 客户端（业务方）。公共客户端使用 PKCE，不保存 client_secret。
 -- 三个布尔开关都允许 NULL：历史行为是 nil 视为 true，
 -- 与显式 false 区分开（见 entity.OAuthClient 的 IsXxx 方法）。
@@ -121,3 +127,44 @@ CREATE TABLE IF NOT EXISTS "signing_key_records" (
     "created_at" TIMESTAMPTZ
 );
 CREATE UNIQUE INDEX IF NOT EXISTS "idx_signing_key_records_key_id" ON "signing_key_records" ("key_id");
+
+-- 注册邀请码。自助注册的唯一门槛：注册请求必须带一个"此刻仍可核销"的码。
+--
+-- 为什么把 used_count 独立成一列、而不是 count(*) 一次 usage 表：
+-- 核销必须是**一次原子的条件更新**（见 logic/invite.Redeem）：
+--   UPDATE ... SET used_count = used_count + 1 WHERE id = ? AND used_count < max_uses
+-- 受影响行数为 0 就代表"次数已被抢完"，天然把并发注册挡在门外。
+-- 若改成「先 count 再 insert 再比较」，两个并发请求会同时读到 used_count
+-- 未满而双双放行 —— 这类竞态只在有人真的同时点注册时才出现，最难复现。
+CREATE TABLE IF NOT EXISTS "invitation_codes" (
+    "id"         BIGSERIAL PRIMARY KEY,
+    "code"       VARCHAR(64)  NOT NULL,
+    "max_uses"   INTEGER      NOT NULL DEFAULT 1,
+    "used_count" INTEGER      NOT NULL DEFAULT 0,
+    "expires_at" TIMESTAMPTZ,
+    "enabled"    BOOLEAN      NOT NULL DEFAULT true,
+    "created_by" BIGINT,
+    "note"       VARCHAR(255),
+    "created_at" TIMESTAMPTZ,
+    "updated_at" TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX IF NOT EXISTS "idx_invitation_codes_code" ON "invitation_codes" ("code");
+CREATE INDEX IF NOT EXISTS "idx_invitation_codes_expires_at" ON "invitation_codes" ("expires_at");
+
+-- 邀请码使用明细：一条 = 某次注册用掉了某张码。
+--
+-- code 冗余存一份（而不是只留 code_id）：码被删除后，明细仍是可读的审计记录。
+-- 只剩一个 code_id 的话，删码就等于把"这人是被谁邀请进来的"一起删掉了，
+-- 而这正是事后追责时唯一想查的东西。
+CREATE TABLE IF NOT EXISTS "invitation_code_usages" (
+    "id"       BIGSERIAL PRIMARY KEY,
+    "code_id"  BIGINT      NOT NULL,
+    "code"     VARCHAR(64) NOT NULL,
+    "user_id"  BIGINT,
+    "username" VARCHAR(64),
+    "email"    VARCHAR(128),
+    "used_at"  TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS "idx_invitation_code_usages_code_id" ON "invitation_code_usages" ("code_id");
+CREATE INDEX IF NOT EXISTS "idx_invitation_code_usages_user_id" ON "invitation_code_usages" ("user_id");
+CREATE INDEX IF NOT EXISTS "idx_invitation_code_usages_used_at" ON "invitation_code_usages" ("used_at");

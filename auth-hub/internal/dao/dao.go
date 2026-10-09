@@ -35,6 +35,11 @@ func (userDao) Table() string { return consts.TableUser }
 // Columns 列名集合
 func (userDao) Columns() internal.UserColumns { return internal.UserColumnsOf() }
 
+// Tx 返回**绑定在事务上**的模型（跨表原子写入用，见 invitationCodeDao.Tx 的说明）
+func (userDao) Tx(tx gdb.TX) *gdb.Model {
+	return tx.Model(consts.TableUser).Safe()
+}
+
 // ── o_auth_clients ──────────────────────────────────────────────────────────
 
 type oauthClientDao struct{}
@@ -148,3 +153,60 @@ func (signingKeyDao) Table() string { return consts.TableSigningKey }
 
 // Columns 列名集合
 func (signingKeyDao) Columns() internal.SigningKeyColumns { return internal.SigningKeyColumnsOf() }
+
+// ── invitation_codes ────────────────────────────────────────────────────────
+
+type invitationCodeDao struct{}
+
+// InvitationCode 注册邀请码表
+var InvitationCode = invitationCodeDao{}
+
+// Ctx 返回带上下文的查询模型
+func (invitationCodeDao) Ctx(ctx context.Context) *gdb.Model {
+	return db.Instance().Model(consts.TableInvitationCode).Safe().Ctx(ctx)
+}
+
+// Tx 返回**绑定在事务上**的模型。
+//
+// 为什么必须另开一个入口：Ctx 拿到的模型挂在连接池上，**不在任何事务里** ——
+// 用它执行的语句会自己独立提交。核销邀请码这种"扣次数 + 建账号 + 写明细"
+// 要么全成要么全不成，只要有一句走的是 Ctx，回滚就漏掉了它，
+// 而漏掉的那句永远是"看起来成功、事后才发现"的一类。
+//
+// 表名依然只出现在 dao 内部：调用方拿到的是模型，不是 SQL。
+func (invitationCodeDao) Tx(tx gdb.TX) *gdb.Model {
+	return tx.Model(consts.TableInvitationCode).Safe()
+}
+
+// Table 表名
+func (invitationCodeDao) Table() string { return consts.TableInvitationCode }
+
+// Columns 列名集合
+func (invitationCodeDao) Columns() internal.InvitationCodeColumns {
+	return internal.InvitationCodeColumnsOf()
+}
+
+// ── invitation_code_usages ──────────────────────────────────────────────────
+
+type invitationCodeUsageDao struct{}
+
+// InvitationCodeUsage 邀请码使用明细表
+var InvitationCodeUsage = invitationCodeUsageDao{}
+
+// Ctx 返回带上下文的查询模型
+func (invitationCodeUsageDao) Ctx(ctx context.Context) *gdb.Model {
+	return db.Instance().Model(consts.TableInvitationCodeUsage).Safe().Ctx(ctx)
+}
+
+// Tx 返回绑定在事务上的模型（见 invitationCodeDao.Tx 的说明）
+func (invitationCodeUsageDao) Tx(tx gdb.TX) *gdb.Model {
+	return tx.Model(consts.TableInvitationCodeUsage).Safe()
+}
+
+// Table 表名
+func (invitationCodeUsageDao) Table() string { return consts.TableInvitationCodeUsage }
+
+// Columns 列名集合
+func (invitationCodeUsageDao) Columns() internal.InvitationCodeUsageColumns {
+	return internal.InvitationCodeUsageColumnsOf()
+}

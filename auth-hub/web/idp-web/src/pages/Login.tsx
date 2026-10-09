@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { authApi, ApiFailure } from '@/api'
 import { Alert, Button, Field, Input } from '@/ui'
 
@@ -107,6 +107,19 @@ export default function LoginPage() {
         >
           一键填充：test / test123456
         </Button>
+
+        <div className="auth-divider" />
+
+        {/* 带上 return_to：注册成功后要接着走同一条授权流程 */}
+        <p className="dim" style={{ fontSize: 12, textAlign: 'center', margin: 0 }}>
+          没有账号？{' '}
+          <Link
+            to={`/register?return_to=${encodeURIComponent(returnTo)}`}
+            style={{ color: 'inherit', textDecoration: 'underline' }}
+          >
+            用邀请码注册
+          </Link>
+        </p>
       </div>
 
       <p className="auth-foot">登录成功后将继续完成 OIDC 授权流程</p>

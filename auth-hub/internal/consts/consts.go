@@ -21,6 +21,11 @@ const (
 	TableOAuthAccessToken       = "o_auth_access_tokens"
 	TableUserSession            = "user_sessions"
 	TableSigningKey             = "signing_key_records"
+
+	// 邀请码相关（自助注册的门槛）。表名是本项目新加的，没有历史包袱，
+	// 因此用复数蛇形（与 users 一致），不必像 o_auth_* 那样迁就 GORM 的命名。
+	TableInvitationCode      = "invitation_codes"
+	TableInvitationCodeUsage = "invitation_code_usages"
 )
 
 // ── Cookie / 会话 ───────────────────────────────────────────────────────────
@@ -65,6 +70,56 @@ const (
 	// DefaultDSN 共享 PG（与 gs-ac 同一实例，不同 schema）。
 	// 生产应通过 IDP_DSN 覆盖，不要把连接串固化进镜像。
 	DefaultDSN = "pgsql:postgres:REDACTED@tcp(47.110.80.47:5432)/postgres?sslmode=disable&search_path=" + DefaultSchema
+)
+
+// ── 邀请码 ──────────────────────────────────────────────────────────────────
+//
+// 邀请码是自助注册的**唯一门槛**：没有它就无法注册。所以它的生成强度与
+// 校验严格程度，直接等于注册入口的安全强度 —— 这里没有"够用就行"。
+const (
+	// InvitationCodePrefix 邀请码前缀。
+	//
+	// 加前缀不是为了好看，而是让它**在日志与截图里一眼可辨**：
+	// 运维排查时看到 inv_ 开头的串就知道该去邀请码表查，而不是当成
+	// 某个 token 或会话 ID 去找；用户把它贴进工单时也不会被误认成密码。
+	InvitationCodePrefix = "inv_"
+	// InvitationCodeBytes 邀请码随机部分的字节数。
+	//
+	// 12 字节 = 96 bit，base64url 编码后 16 字符。邀请码与 token 不同：
+	// token 藏在 HttpOnly Cookie 或 SDK 里，而邀请码是**会被转述、粘贴、
+	// 截图**的短凭据，被枚举的风险更高。96 bit 让暴力枚举在成本上不可行，
+	// 同时长度还在人能念出来的范围内。
+	InvitationCodeBytes = 12
+	// DefaultInvitationMaxUses 新建邀请码时的默认可用次数（一人一码是常态）
+	DefaultInvitationMaxUses = 1
+	// MaxInvitationUses 单张邀请码允许配置的最大次数。
+	//
+	// 设上限是为了挡住"手滑多打几个零"：一个 999999999 次的邀请码，
+	// 效果上等于把注册入口完全敞开 —— 那正是邀请制要防的事。
+	MaxInvitationUses = 1000
+	// MaxInvitationValidDays 单张邀请码允许配置的最长有效期（天）
+	MaxInvitationValidDays = 3650
+)
+
+// ── 注册校验 ────────────────────────────────────────────────────────────────
+//
+// 长度上下限集中在常量里，是为了让"前端提示"与"后端拒绝"引用同一组数字。
+// 两处各写一份的下场是前端放过去、后端拒掉，用户在表单上反复改却看不出
+// 问题出在哪一位。
+const (
+	// MinUsernameLength 账号最短长度
+	MinUsernameLength = 3
+	// MaxUsernameLength 账号最长长度（表列为 VARCHAR(64)，这里留足余量）
+	MaxUsernameLength = 32
+	// MinPasswordLength 口令最短长度
+	MinPasswordLength = 8
+	// MaxPasswordLength 口令最长长度。
+	//
+	// 上限是防御：网关、访问日志、哈希前的拷贝都会先被这个体积拖住，
+	// 而"把一兆文本当口令提交"从来不是正常用户会做的事。
+	MaxPasswordLength = 128
+	// MaxEmailLength 邮箱最长长度（与 users.email 的 VARCHAR(128) 对齐）
+	MaxEmailLength = 128
 )
 
 // ── 预置数据 ────────────────────────────────────────────────────────────────
