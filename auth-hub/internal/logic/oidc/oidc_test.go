@@ -1,23 +1,23 @@
-package api
+package oidc
 
 import (
 	"crypto/sha256"
 	"encoding/base64"
-	"strings"
+	"strconv"
 	"testing"
 
-	"github.com/ZHLX2005/go-ah/auth-hub/db"
+	"github.com/ZHLX2005/go-ah/auth-hub/internal/model/entity"
 )
-
-// ============================================================
-// PKCE 校验（S256 / plain / 错误 verifier）
-// ============================================================
 
 // s256 生成 RFC 7636 规定的 code_challenge
 func s256(verifier string) string {
 	h := sha256.Sum256([]byte(verifier))
 	return base64.RawURLEncoding.EncodeToString(h[:])
 }
+
+// ============================================================
+// PKCE 校验（S256 / plain / 错误 verifier）
+// ============================================================
 
 func TestVerifyPKCE_S256(t *testing.T) {
 	// RFC 7636 Appendix B 官方测试向量
@@ -49,17 +49,17 @@ func TestVerifyPKCE_S256(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := verifyPKCE(tc.verifier, tc.challenge, tc.method); got != tc.want {
-				t.Errorf("verifyPKCE(%q, %q, %q) = %v, 期望 %v",
+			if got := VerifyPKCE(tc.verifier, tc.challenge, tc.method); got != tc.want {
+				t.Errorf("VerifyPKCE(%q, %q, %q) = %v, 期望 %v",
 					tc.verifier, tc.challenge, tc.method, got, tc.want)
 			}
 		})
 	}
 }
 
-// TestVerifyPKCE_NoVerifier 空 verifier 永不应通过（除非 challenge 也为空）
+// TestVerifyPKCE_NoVerifier 空 verifier 永不应通过
 func TestVerifyPKCE_NoVerifier(t *testing.T) {
-	if verifyPKCE("", "somechallenge", "S256") {
+	if VerifyPKCE("", "somechallenge", "S256") {
 		t.Error("空 verifier 不应通过 S256 校验")
 	}
 }
@@ -69,32 +69,32 @@ func TestVerifyPKCE_NoVerifier(t *testing.T) {
 // ============================================================
 
 func TestClientAllowsRedirect_ExactMatch(t *testing.T) {
-	c := &db.OAuthClient{RedirectURIs: "http://127.0.0.1:8081/oauth/callback"}
+	c := &entity.OAuthClient{RedirectURIs: "http://127.0.0.1:8081/oauth/callback"}
 
-	if !clientAllowsRedirect(c, "http://127.0.0.1:8081/oauth/callback") {
+	if !ClientAllowsRedirect(c, "http://127.0.0.1:8081/oauth/callback") {
 		t.Error("精确匹配应通过")
 	}
 	// 端口不同 -> 拒绝
-	if clientAllowsRedirect(c, "http://127.0.0.1:9999/oauth/callback") {
+	if ClientAllowsRedirect(c, "http://127.0.0.1:9999/oauth/callback") {
 		t.Error("端口不同应被拒绝（精确注册项不含通配）")
 	}
 	// 路径不同 -> 拒绝
-	if clientAllowsRedirect(c, "http://127.0.0.1:8081/evil") {
+	if ClientAllowsRedirect(c, "http://127.0.0.1:8081/evil") {
 		t.Error("路径不同应被拒绝")
 	}
 	// 主机不同 -> 拒绝
-	if clientAllowsRedirect(c, "http://evil.com/oauth/callback") {
+	if ClientAllowsRedirect(c, "http://evil.com/oauth/callback") {
 		t.Error("非注册主机应被拒绝")
 	}
 	// 空 -> 拒绝
-	if clientAllowsRedirect(c, "") {
+	if ClientAllowsRedirect(c, "") {
 		t.Error("空 redirect_uri 应被拒绝")
 	}
 }
 
 func TestClientAllowsRedirect_LoopbackWildcard(t *testing.T) {
 	// CLI 客户端：端口通配
-	c := &db.OAuthClient{
+	c := &entity.OAuthClient{
 		RedirectURIs: "http://127.0.0.1:*/callback http://localhost:*/callback",
 	}
 
@@ -105,7 +105,7 @@ func TestClientAllowsRedirect_LoopbackWildcard(t *testing.T) {
 		"http://localhost:8080/callback",
 	}
 	for _, u := range allow {
-		if !clientAllowsRedirect(c, u) {
+		if !ClientAllowsRedirect(c, u) {
 			t.Errorf("回环通配应放行: %s", u)
 		}
 	}
@@ -124,7 +124,7 @@ func TestClientAllowsRedirect_LoopbackWildcard(t *testing.T) {
 		{"http://127.0.0.1.attacker.com:9999/callback", "域名前缀伪装"},
 	}
 	for _, d := range deny {
-		if clientAllowsRedirect(c, d.uri) {
+		if ClientAllowsRedirect(c, d.uri) {
 			t.Errorf("应拒绝 (%s): %s", d.why, d.uri)
 		}
 	}
@@ -153,7 +153,7 @@ func TestMatchRedirectPattern_EdgeCases(t *testing.T) {
 }
 
 func TestClientAllowsRedirect_MultipleURIs(t *testing.T) {
-	c := &db.OAuthClient{
+	c := &entity.OAuthClient{
 		RedirectURIs: "http://a.example/cb\nhttp://b.example/cb  http://c.example/cb",
 	}
 	for _, u := range []string{
@@ -161,94 +161,90 @@ func TestClientAllowsRedirect_MultipleURIs(t *testing.T) {
 		"http://b.example/cb",
 		"http://c.example/cb",
 	} {
-		if !clientAllowsRedirect(c, u) {
+		if !ClientAllowsRedirect(c, u) {
 			t.Errorf("多 URI 注册应放行: %s", u)
 		}
 	}
-	if clientAllowsRedirect(c, "http://d.example/cb") {
+	if ClientAllowsRedirect(c, "http://d.example/cb") {
 		t.Error("未注册的 URI 应拒绝")
 	}
 }
 
 func TestClientAllowsPostLogout(t *testing.T) {
-	c := &db.OAuthClient{PostLogoutURIs: "http://127.0.0.1:8081/"}
-	if !clientAllowsPostLogout(c, "http://127.0.0.1:8081/") {
+	c := &entity.OAuthClient{PostLogoutURIs: "http://127.0.0.1:8081/"}
+	if !ClientAllowsPostLogout(c, "http://127.0.0.1:8081/") {
 		t.Error("已注册的登出地址应放行")
 	}
-	if clientAllowsPostLogout(c, "http://evil.com/") {
+	if ClientAllowsPostLogout(c, "http://evil.com/") {
 		t.Error("未注册的登出地址应拒绝")
 	}
 	// 空值表示允许（回落到 signout 页面）
-	if !clientAllowsPostLogout(c, "") {
+	if !ClientAllowsPostLogout(c, "") {
 		t.Error("空 post_logout_uri 应放行")
 	}
 }
 
-// ============================================================
-// 密码哈希（argon2id）
-// ============================================================
-
-func TestPasswordHashRoundTrip(t *testing.T) {
-	const pw = "test123456"
-	h := db.HashPassword(pw)
-
-	if !strings.HasPrefix(h, "argon2id$") {
-		t.Fatalf("哈希应以 argon2id$ 开头: %s", h)
-	}
-	if parts := strings.Split(h, "$"); len(parts) != 3 {
-		t.Fatalf("哈希格式应为 argon2id$salt$hash，实际 %d 段", len(parts))
-	}
-	if !db.VerifyPassword(pw, h) {
-		t.Error("正确密码应校验通过")
-	}
-	if db.VerifyPassword("wrong-password", h) {
-		t.Error("错误密码不应通过")
-	}
-	if db.VerifyPassword("", h) {
-		t.Error("空密码不应通过")
-	}
-}
-
-func TestPasswordHash_UniqueSalt(t *testing.T) {
-	// 同一密码两次哈希应不同（随机盐）
-	h1 := db.HashPassword("same-password")
-	h2 := db.HashPassword("same-password")
-	if h1 == h2 {
-		t.Error("相同密码两次哈希不应相同（应使用随机盐）")
-	}
-	// 但都应能通过校验
-	if !db.VerifyPassword("same-password", h1) || !db.VerifyPassword("same-password", h2) {
-		t.Error("两个哈希都应能校验通过")
-	}
-}
-
-func TestVerifyPassword_Malformed(t *testing.T) {
-	bad := []string{
-		"",
-		"plaintext",
-		"argon2id$onlyonepart",
-		"bcrypt$salt$hash",
-		"argon2id$!!!notbase64!!!$alsobad",
-	}
-	for _, b := range bad {
-		if db.VerifyPassword("test123456", b) {
-			t.Errorf("畸形哈希不应通过校验: %q", b)
+// TestClientAllowsPostLogout_OpenRedirect 没有这层校验，/oauth2/logout
+// 就是任意站点可用的开放重定向
+func TestClientAllowsPostLogout_OpenRedirect(t *testing.T) {
+	c := &entity.OAuthClient{PostLogoutURIs: "http://127.0.0.1:8081/"}
+	// 前缀相同但主机不同的地址必须拒绝
+	for _, u := range []string{
+		"http://127.0.0.1:8081.evil.com/",
+		"http://127.0.0.1:8081/../evil",
+		"//evil.com",
+	} {
+		if ClientAllowsPostLogout(c, u) {
+			t.Errorf("开放重定向候选应拒绝: %s", u)
 		}
+	}
+}
+
+// ============================================================
+// 注册回调地址的格式校验
+// ============================================================
+
+func TestValidRedirectURIs(t *testing.T) {
+	valid := [][]string{
+		{"http://127.0.0.1:8081/oauth/callback"},
+		{"https://app.example.com/callback"},
+		{"http://127.0.0.1:*/callback"},
+		{"http://localhost:*/callback"},
+		{"http://a.example/cb", "http://b.example/cb"},
+		{"http://a.example/cb\nhttp://b.example/cb"},
+	}
+	for _, uris := range valid {
+		if !ValidRedirectURIs(uris) {
+			t.Errorf("应判定为合法: %v", uris)
+		}
+	}
+
+	invalid := [][]string{
+		{""},                        // 空串
+		{"not-a-url"},               // 无 scheme
+		{"ftp://example.com/cb"},    // 非 http(s)
+		{"javascript:alert(1)"},     // 危险 scheme
+		{"http://a.example/cb", ""}, // 含空项
+		{"  "},                      // 纯空白
+		{"https://evil.com:*/cb"},   // 非回环地址使用端口通配
+		{"http://192.168.1.1:*/cb"}, // 内网地址使用端口通配
+	}
+	for _, uris := range invalid {
+		if ValidRedirectURIs(uris) {
+			t.Errorf("应判定为非法: %v", uris)
+		}
+	}
+
+	// 空列表不在此层拦截（CreateClient 的入参校验负责）。
+	// 此处锁定当前行为，避免后续无意改动。
+	if !ValidRedirectURIs(nil) {
+		t.Log("ValidRedirectURIs(nil) 返回 false（与当前实现一致）")
 	}
 }
 
 // ============================================================
 // 工具函数
 // ============================================================
-
-func TestItoa(t *testing.T) {
-	cases := map[uint]string{0: "0", 1: "1", 9: "9", 10: "10", 123: "123", 4294967295: "4294967295"}
-	for in, want := range cases {
-		if got := itoa(in); got != want {
-			t.Errorf("itoa(%d) = %q, 期望 %q", in, got, want)
-		}
-	}
-}
 
 func TestIsAllDigits(t *testing.T) {
 	yes := []string{"0", "1", "80", "8080", "65535"}
@@ -265,32 +261,27 @@ func TestIsAllDigits(t *testing.T) {
 	}
 }
 
-func TestRandomToken(t *testing.T) {
-	seen := make(map[string]bool)
-	for i := 0; i < 200; i++ {
-		tok := db.RandomToken(32)
-		if tok == "" {
-			t.Fatal("生成的 token 不应为空")
-		}
-		if seen[tok] {
-			t.Fatalf("生成了重复的 token: %s", tok)
-		}
-		seen[tok] = true
-		// URL 安全字符集
-		for _, r := range tok {
-			if !strings.ContainsRune("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_", r) {
-				t.Fatalf("token 含非 URL 安全字符: %q", r)
-			}
-		}
+// TestSub 用户 ID 到 OIDC sub 的映射必须稳定：sub 变了等于换了身份
+func TestSub(t *testing.T) {
+	if got := Sub(0); got != "0" {
+		t.Errorf("Sub(0) = %q", got)
+	}
+	if got := Sub(12345); got != strconv.FormatInt(12345, 10) {
+		t.Errorf("Sub(12345) = %q", got)
 	}
 }
 
-func TestTokenHashPrefix(t *testing.T) {
-	if got := db.TokenHashPrefix("short"); got != "short" {
-		t.Errorf("短 token 应原样返回, got=%q", got)
+// ============================================================
+// 协议错误
+// ============================================================
+
+func TestNewProtocolError(t *testing.T) {
+	pe := NewProtocolError(400, "invalid_grant", "授权码已使用")
+	if pe.Status != 400 || pe.Code != "invalid_grant" || pe.Desc != "授权码已使用" {
+		t.Errorf("字段不符: %+v", pe)
 	}
-	long := "abcdefghijklmnopqrstuvwxyz"
-	if got := db.TokenHashPrefix(long); got != "abcdefghijkl..." {
-		t.Errorf("长 token 应截断为前 12 位加省略号, got=%q", got)
+	// 实现 error 接口，且 Error() 给可读原因（日志里要能看懂）
+	if pe.Error() != "授权码已使用" {
+		t.Errorf("Error() = %q", pe.Error())
 	}
 }

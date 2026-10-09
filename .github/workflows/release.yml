@@ -15,7 +15,8 @@ permissions:
   contents: write
 
 env:
-  # auth-hub 的 go.mod 要求 go >= 1.25.0（gorm.io/driver/postgres / pgx v5）
+  # auth-hub / template-business-server 的 go.mod 声明 go >= 1.25.0，
+  # 依赖侧硬下限 1.23.0（GoFrame v2 / golang.org/x/crypto）
   GO_VERSION: '1.25'
   NODE_VERSION: '22'
 
@@ -80,12 +81,12 @@ jobs:
   # ─────────────────────────────────────────────────────────────
   # 3. 多平台编译并打包
   #
-  # 依赖说明：auth-hub / template-business-server 使用 gorm.io/driver/sqlite，
-  # 底层是 mattn/go-sqlite3（cgo）。因此：
-  #   · linux/amd64、linux/arm64：在 ubuntu runner 上交叉编译，需 gcc 交叉工具链
-  #   · darwin/*：Go 交叉编译 cgo 需要 osxcross（构建复杂度高），此处分发
-  #     「源码 + 内嵌前端产物」，由使用者在 macOS 本地 go build
-  # template-oidc-cli 纯 Go，无 cgo，可任意交叉编译。
+  # 依赖说明：三个模块都是**纯 Go**，没有 cgo 依赖 ——
+  #   · auth-hub：gf 的 pgsql 驱动（lib/pq）
+  #   · template-business-server：gf 的 sqlite 驱动（底层 glebarez/go-sqlite，纯 Go 实现）
+  #   · template-oidc-cli：只用标准库 + x/crypto
+  # 因此 CGO_ENABLED=0 一把梭，交叉编译不需要任何 gcc 工具链。
+  # （darwin/Windows 仍只分发源码包：那与 cgo 无关，是不想多维护一套产物与签名流程。）
   # ─────────────────────────────────────────────────────────────
   build:
     name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
@@ -97,22 +98,14 @@ jobs:
         include:
           - goos: linux
             goarch: amd64
-            install: gcc
           - goos: linux
             goarch: arm64
-            install: gcc-aarch64-linux-gnu
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
-
-      # ── 安装交叉编译工具链（cgo 必需） ──
-      - name: 安装交叉编译工具链
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ${{ matrix.install }}
 
       # ── 嵌入前端产物（部署方案A：Go 直接托管 dist） ──
       - uses: actions/download-artifact@v4
@@ -137,20 +130,16 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
 
-      - name: 编译（linux，CGO 交叉编译）
+      - name: 编译（linux 交叉编译，纯 Go）
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: '1'
+          # 纯 Go，关掉 cgo：产物静态链接、不依赖目标机 glibc 版本
+          CGO_ENABLED: '0'
           VERSION: ${{ steps.vars.outputs.version }}
         run: |
           set -euo pipefail
-          if [ "${{ matrix.goarch }}" = "arm64" ]; then
-            export CC=aarch64-linux-gnu-gcc
-          else
-            export CC=gcc
-          fi
-          echo "GOOS=$GOOS GOARCH=$GOARCH CC=$CC"
+          echo "GOOS=$GOOS GOARCH=$GOARCH CGO_ENABLED=$CGO_ENABLED"
 
           ( cd auth-hub && go build -trimpath \
               -ldflags "-s -w -X main.version=${VERSION}" \

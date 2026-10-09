@@ -60,9 +60,16 @@ export function Button({
 export function Input({
   className,
   size,
+  type = 'text',
   ...rest
 }: Omit<InputHTMLAttributes<HTMLInputElement>, 'size'> & { size?: 'lg' }) {
-  return <input {...rest} className={cx('input', size === 'lg' && 'input--lg', className)} />
+  // 显式写出 type：不写时浏览器也按 text 处理，但**属性不会出现在 DOM 里**，
+  // 于是 `input[type=text]` 这类属性选择器永远匹配不到 —— e2e 里就是这么
+  // 定位账号框的（tests/helpers.ts），外部验收脚本也按同样约定写。
+  // 属性缺省值等价于 text，这里补上不改变任何行为，只是把隐式约定显式化。
+  return (
+    <input type={type} {...rest} className={cx('input', size === 'lg' && 'input--lg', className)} />
+  )
 }
 
 export function Select({ className, children, ...rest }: SelectHTMLAttributes<HTMLSelectElement>) {

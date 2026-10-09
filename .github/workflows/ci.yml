@@ -13,8 +13,9 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # auth-hub 的 go.mod 要求 go >= 1.25.0（gorm.io/driver/postgres 与
-  # jackc/pgx v5 的下限），因此不能再停在 1.21。
+  # auth-hub / template-business-server 的 go.mod 声明 go >= 1.25.0；
+  # 依赖侧的硬下限是 1.23.0（GoFrame v2 与 golang.org/x/crypto 各自要求），
+  # 所以整体不能再停在 1.21。三个模块统一用 1.25 构建。
   GO_VERSION: '1.25'
   NODE_VERSION: '22'
 

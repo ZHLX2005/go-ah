@@ -1,26 +1,27 @@
 // Package testpg 为单元测试提供一次性的 PostgreSQL 隔离环境。
 //
-// 为什么需要它：auth-hub 的存储已从 SQLite 换成共享 PG，测试不能再
-// 「开个内存库」了 —— 它们必须连真实 PG（SQL 方言、唯一索引、自增序列
-// 这些差异只有在真库上才验证得出来），但又绝不能让测试数据碰到生产 schema。
+// 为什么需要它：auth-hub 的存储是共享 PG，测试不能「开个内存库」了 ——
+// 它们必须连真实 PG（SQL 方言、唯一索引、自增序列这些差异只有在真库上
+// 才验证得出来），但又绝不能让测试数据碰到生产 schema。
 //
 // 做法：每个测试建一个随机命名的 schema，测试结束后 DROP。
-// 本包刻意不 import db 包 —— 那样会让 db 包的 in-package 测试（db_test.go）
-// 无法导入本包（Go 不允许测试包与其依赖形成环）。
+//
+// 关于包依赖：本包 import 了 internal/db（复用它的 DSN 解析与 gdb 节点
+// 构造，避免在同一件事上维护两份实现）。因此 db 包的测试必须写成
+// **外部测试包**（package db_test）—— 那样 testpg 与 db 之间不会成环。
 package testpg
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"fmt"
-	"net/url"
 	"os"
 	"strings"
 	"testing"
 
-	"gorm.io/driver/postgres"
-	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
+	"github.com/gogf/gf/v2/database/gdb"
+
+	"github.com/ZHLX2005/go-ah/auth-hub/internal/db"
 )
 
 // EnvKey 测试 PG 连接串的环境变量名。
@@ -43,7 +44,7 @@ func BaseDSN(t testing.TB) string {
 	if strings.TrimSpace(dsn) == "" {
 		t.Skipf("跳过：未设置 %s（需要一个可建 schema 的 PostgreSQL 连接串）", EnvKey)
 	}
-	if sp := searchPathOf(dsn); sp != "" {
+	if sp := db.SchemaFromDSNExplicit(dsn); sp != "" {
 		t.Fatalf("%s 不应带 search_path（当前 %q）：测试会创建并删除 schema，"+
 			"基础连接串指向已有 schema 太危险", EnvKey, sp)
 	}
@@ -72,43 +73,25 @@ func NewSchema(t testing.TB) (dsn string, cleanup func()) {
 	// 双保险：调用方漏了 defer 也能在测试结束时清掉
 	t.Cleanup(cleanup)
 
-	return withSearchPath(base, name), cleanup
+	return db.WithSearchPath(base, name), cleanup
 }
 
 // execRaw 用独立连接执行一条 DDL（不进入任何测试 schema）
 func execRaw(dsn, stmt string) error {
-	g, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Silent),
-	})
-	if err != nil {
-		return fmt.Errorf("连接失败: %w", err)
-	}
-	sqlDB, err := g.DB()
+	ctx := context.Background()
+
+	node, _, err := db.ParseDSN(dsn)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = sqlDB.Close() }()
-	return g.Exec(stmt).Error
-}
-
-func searchPathOf(dsn string) string {
-	u, err := url.Parse(dsn)
+	conn, err := gdb.New(node)
 	if err != nil {
-		return ""
+		return err
 	}
-	return strings.TrimSpace(u.Query().Get("search_path"))
-}
+	defer func() { _ = conn.Close(ctx) }()
 
-// withSearchPath 在保留原有 query 的前提下追加 search_path
-func withSearchPath(dsn, schema string) string {
-	u, err := url.Parse(dsn)
-	if err != nil {
-		return dsn
-	}
-	q := u.Query()
-	q.Set("search_path", schema)
-	u.RawQuery = q.Encode()
-	return u.String()
+	_, err = conn.Exec(ctx, stmt)
+	return err
 }
 
 func randomSuffix() string {

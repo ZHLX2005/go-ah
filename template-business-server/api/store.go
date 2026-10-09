@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"log"
 	"time"
@@ -10,13 +11,13 @@ import (
 )
 
 // ============================================================
-// 业务侧 Token 加密存储层（Task4）
+// 业务侧 Token 加密存储层
 //
 // 所有对 BusinessSession 中 token 字段的读写都必须经过本文件，
-// 避免某个接口忘记解密而把密文当作 token 直接发给 IDP。
+// 避免某个接口忘记解密而把密文当成 token 直接发给 IDP。
 //
-// 写路径：Encrypt -> DB
-// 读路径：DB -> Decrypt
+// 写路径：Encrypt -> db
+// 读路径：db -> Decrypt
 // ============================================================
 
 // ttl 常量，与 IDP 侧保持一致
@@ -29,12 +30,13 @@ const (
 	RefreshThreshold = 2 * time.Minute
 )
 
-// cryptoEngine 全局加密引擎，在 main 启动期初始化
+// cryptoEngine 全局加密引擎，在启动期初始化
 var cryptoEngine *cryptox.Engine
 
 // InitCrypto 初始化加密引擎；密钥来自环境变量 BIZ_TOKEN_SECRET。
-// 失败会返回错误，由 main 决定是否终止启动——默认必须终止，
-// 否则会在没有加密能力的情况下继续提供登录服务。
+//
+// 失败会返回错误，由启动流程决定终止 —— 默认必须终止，否则会在没有加密
+// 能力的情况下继续提供登录服务，把 refresh_token 明文写进库。
 func InitCrypto() error {
 	e, err := cryptox.NewEngine()
 	if err != nil {
@@ -86,11 +88,12 @@ func decryptToken(cipherText string) (string, error) {
 // 会话读写
 // ============================================================
 
-// saveSession 持久化会话，token 字段自动加密
-// 调用方传入的是明文 token 的 sess；本函数会就地加密后再写库，
-// 因此调用方在 Save 之后不应再依赖 sess 中的 token 字段为明文。
-// 需要明文的场景请使用 ReadTokens() 读取。
-func saveSession(sess *db.BusinessSession) error {
+// saveSession 持久化会话，token 字段自动加密。
+//
+// 调用方传入的是明文 token 的 sess；本函数会就地加密后写库，因此调用方在
+// 返回之后不应再依赖 sess 中的 token 字段为密文 —— 这里会把明文还原回去，
+// 保证调用方内存里的值不被污染。需要明文的场景请用 ReadTokens()。
+func saveSession(ctx context.Context, sess *db.BusinessSession) error {
 	encID, err := encryptToken(sess.IDToken)
 	if err != nil {
 		return err
@@ -104,7 +107,7 @@ func saveSession(sess *db.BusinessSession) error {
 		return err
 	}
 
-	// 备份明文，写库后还原内存中的值，保证调用方拿到的仍是明文
+	// 备份明文，写库后还原内存中的值
 	plainID, plainAccess, plainRefresh := sess.IDToken, sess.AccessToken, sess.RefreshToken
 
 	sess.IDToken = encID
@@ -112,7 +115,7 @@ func saveSession(sess *db.BusinessSession) error {
 	sess.RefreshToken = encRefresh
 	sess.Encrypted = true
 
-	err = db.DB.Save(sess).Error
+	err = db.UpsertSession(ctx, sess)
 
 	sess.IDToken = plainID
 	sess.AccessToken = plainAccess
@@ -133,14 +136,16 @@ type SessionTokens struct {
 	RefreshToken string
 }
 
-// ReadTokens 读取并解密会话中的 token
-// 对历史明文行（Encrypted=false）直接返回原值，实现平滑迁移
+// ReadTokens 读取并解密会话中的 token。
+//
+// 对历史明文行（Encrypted=false）直接返回原值，实现平滑迁移：
+// 升级前的库里存的是明文，解密它只会得到一个"密文格式非法"的错误，
+// 把本来能用的会话变成不可用。
 func ReadTokens(sess *db.BusinessSession) (*SessionTokens, error) {
 	if sess == nil {
 		return nil, errors.New("会话为空")
 	}
 	if !sess.Encrypted {
-		// 存量明文数据：不尝试解密
 		return &SessionTokens{
 			IDToken:      sess.IDToken,
 			AccessToken:  sess.AccessToken,

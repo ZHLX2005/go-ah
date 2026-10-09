@@ -8,8 +8,8 @@
 
 | 模块 | 角色 | 说明 |
 |---|---|---|
-| **auth-hub** | 认证中心（IdP） | 统一登录平台，提供登录 / 授权 / 令牌 / 登出 / JWKS / 发现文档 / 管理后台（Go + Gin + PostgreSQL + React） |
-| **template-business-server** | 业务接入模板 | 业务 SPA 接入 OIDC 的**参考脚手架**，演示后端保管 token + 加密存储 + 后台自动续期 |
+| **auth-hub** | 认证中心（IdP） | 统一登录平台，提供登录 / 授权 / 令牌 / 登出 / JWKS / 发现文档 / 管理后台（Go + GoFrame + PostgreSQL + React） |
+| **template-business-server** | 业务接入模板 | 业务 SPA 接入 OIDC 的**参考脚手架**，演示后端保管 token + 加密存储 + 后台自动续期（Go + GoFrame + SQLite） |
 | **template-oidc-cli** | 命令行客户端 | 原生 / CLI 应用接入范例：本机回环回调 + PKCE，不持有 client_secret（独立 Go module） |
 
 前后端分离架构（部署方案A）：React 打包静态资源由各自 Go 后端托管，`go run` 即同时提供 API + 页面。
@@ -20,24 +20,45 @@
 
 | 层 | 技术 |
 |---|---|
-| 后端 | Go 1.25+、Gin、GORM(PostgreSQL)、golang-jwt(RS256)、argon2id、coreos/go-oidc、oauth2 |
+| 后端 | Go 1.25+、**GoFrame v2**（ghttp / gdb / gcmd）、golang-jwt(RS256)、argon2id、coreos/go-oidc、oauth2 |
 | 前端 | Vite + React 18 + TypeScript、TailwindCSS(CDN)、openid-client v5（浏览器侧 PKCE） |
-| 数据库 | **auth-hub 用 PostgreSQL**（`IDP_DSN` 指定，默认落在独立 schema `auth_hub`，与业务库共享同一实例互不干扰）；template-business-server 仍用 SQLite 嵌入式（`template.db`） |
+| 数据库 | **auth-hub 用 PostgreSQL**（`IDP_DSN` 指定，默认落在独立 schema `auth_hub`，与业务库共享同一实例互不干扰）；template-business-server 用 SQLite 嵌入式（`template.db`） |
+
+> 底层框架已从 Gin + GORM 完整迁移到 **GoFrame v2**，仓库内不再有 Gin / GORM 依赖。
+> 两边的数据库驱动都是**纯 Go**（gf 官方 sqlite 驱动底层是 glebarez/go-sqlite），
+> 所以 `CGO_ENABLED=0` 也能构建，交叉编译不需要 gcc 工具链。
 
 ## 2. 目录结构
 
 ```
 go-ah/
 ├── auth-hub/                      # 认证中心（IdP）
-│   ├── main.go                    # 入口：API路由 + 静态资源托管
-│   ├── db/                        # 表模型 / 初始化 / argon2id / 密钥
-│   ├── api/                       # 登录、授权、token、登出、JWKS、管理后台
+│   ├── main.go                    # 入口：只留 gctx + cmd.Main
+│   ├── api/{admin,auth,oidc}/v1/  # 请求/响应结构体（字段名 = 对外契约）
+│   ├── internal/
+│   │   ├── cmd/                   # 装配顺序：config → db → signing → router
+│   │   ├── config/                # 配置加载（env 覆盖 yaml）
+│   │   ├── controller/            # HTTP 处理层（消费 logic，只做映射与状态码）
+│   │   ├── dao/  model/           # 表访问对象 / entity(读) 与 do(写)
+│   │   ├── db/                    # 连接、schema 隔离、内嵌 DDL、种子（驱动在此注册）
+│   │   ├── logic/                 # admin / oidc / session / signing / user
+│   │   ├── middleware/            # 管理端鉴权
+│   │   ├── router/                # 全部路由的唯一清单 + 适配器
+│   │   └── testpg/                # 一次性 PG schema（测试隔离）
+│   ├── manifest/config/config.yaml
 │   └── web/idp-web/               # React 前端（/login /consent /logout /admin）
 ├── template-business-server/      # 模板业务平台（接入 Demo）
-│   ├── main.go
-│   ├── db/                        # business_users / business_sessions
-│   ├── cryptox/                   # AES-256-GCM + PBKDF2 Token 加密（Task4）
-│   ├── api/                       # 回调换token、profile、登出、刷新、加密存储、后台续期
+│   ├── main.go                    # 入口：gcmd 命令 + 装配
+│   ├── api/
+│   │   ├── v1/                    # 请求/响应结构体
+│   │   ├── router.go              # 路由清单 + 入参适配器
+│   │   ├── oidc.go                # OIDC 自举、回调换 token
+│   │   ├── account.go             # session / profile / logout
+│   │   ├── refresh.go             # 主动续期 + 后台巡检
+│   │   ├── store.go               # 会话加解密读写（token 只经这里进出）
+│   │   └── system.go              # health / security-status
+│   ├── db/                        # 业务表读写 API + ddl/schema.sql（驱动在此注册）
+│   ├── cryptox/                   # AES-256-GCM + PBKDF2 Token 加密
 │   └── web/template-web/          # React 前端（/ 与 /oauth/callback）
 ├── template-oidc-cli/                      # 命令行 OIDC 客户端（本机回环回调 + PKCE）
 │   ├── main.go
@@ -48,6 +69,10 @@ go-ah/
 ├── .github/workflows/             # CI：测试 / 代码检查 / 多平台构建 + 发布
 └── README.md
 ```
+
+> 两个服务的**数据库驱动都注册在持有连接的包里**（`internal/db` / `db`），
+> 不是放在 `main.go`：这样任何链接了该包的测试二进制都能拿到驱动，
+> 否则会报出 "cannot find database driver" 这种指向错误方向的错。
 
 ## 3. 一键启动
 
@@ -251,24 +276,27 @@ cd template-business-server && go test ./... -v
 cd template-oidc-cli && go test ./... -v
 ```
 
-| 模块 | 覆盖内容 |
+| 包 | 覆盖内容 |
 |---|---|
-| `auth-hub/api` | PKCE S256（含 RFC 7636 官方测试向量）、redirect_uri 精确/回环通配匹配、argon2id 哈希往返与畸形输入、RS256 id_token 签发与验签（错误密钥/篡改拒绝）、JWKS 模数一致性、授权码一次性与过期、refresh_token 吊销与过期、TTL 常量、**GORM 显式 `false` 持久化回归**、client_secret 生成、token 掩码、`clientView` 不泄漏密钥 |
-| `auth-hub/db` | 种子数据（`test` 管理员、三个预置客户端）、重复 Init 幂等、旧库自动提权、表结构完整性、回环通配回调注册、**schema 隔离**（防止落到 public 撞别人的表）、**签名密钥跨重启持久化**、PEM 编解码往返、`IDP_SIGNING_KEY_PEM` 优先采用、DSN 解析与非法 schema 名拒绝（SQL 注入防护）、日志密码脱敏 |
+| `auth-hub/internal/logic/oidc` | PKCE S256（含 RFC 7636 官方测试向量）、redirect_uri 精确/回环通配匹配、授权码一次性与过期、refresh_token 吊销与过期、`sub` 派生、登出回跳白名单（开放重定向防护） |
+| `auth-hub/internal/logic/signing` | RS256 id_token 签发与验签、声明完整性（iss/sub/aud/nonce/exp/iat/auth_time）、scope 与 nonce 开关、错误密钥与**篡改拒绝**、JWKS 公钥与私钥一致性、PEM（PKCS#8 / PKCS#1）往返 |
+| `auth-hub/internal/db` | 种子数据（`test` 管理员、三个预置客户端）、重复 `Init` 幂等、gs-ac 回调白名单随重启同步、**schema 隔离**（防止落到 public 撞别人的表）、DSN 解析与**非法 schema 名拒绝**（标识符拼接注入防护）、内嵌 DDL 覆盖全部 7 张表、日志密码脱敏 |
+| `auth-hub/internal/router` | 装配层黑盒（**不需要数据库**）：路由清单可达、管理端 10 条路由全部被鉴权拦住、四种响应形状（业务信封 / OIDC 协议错 / 裸对象 / 无 `code` 的失败体）逐一核对 |
+| `auth-hub/internal/{logic/admin,controller/admin,model/entity,utility}` | client_secret 生成与掩码、错误种类到状态码的映射、`clientView` 不泄漏密钥、空列表序列化为 `[]`、argon2id 哈希往返、`*bool` 三态语义 |
+| `template-business-server/api` | 加密落库（库中无明文 JWT）、读取还原、存量明文平滑迁移、密钥不匹配、续期阈值全边界（9 个 case）、续期协程启停幂等、吊销回调、解密失败自动销毁会话；装配层黑盒核对八个端点与**响应契约字样**（TTL 必须是 `10m`/`168h`/`2m`，不能变成 `10m0s`） |
+| `template-business-server/db` | 建表幂等、用户按 sub 查询/新建/资料同步、会话 upsert（插入后回填主键、二次写不新增行）、**过期会话在 SQL 层就查不出来**、过期清理与活跃会话扫描、bool ↔ INTEGER 与时间列往返 |
 | `template-business-server/cryptox` | 密钥强度校验、加解密往返、盐/nonce 随机性、错误密钥与篡改（GCM tag）拒绝、明文零泄漏、`IsCiphertext` 判定、PBKDF2 派生确定性 |
-| `template-business-server/api` | 加密落库（库中无明文 JWT）、读取还原、存量明文平滑迁移、密钥不匹配、续期阈值全边界（9 个 case）、续期协程启停幂等、吊销回调、解密失败自动销毁会话 |
 
-覆盖率：
+覆盖率（本地随时可复算）：
 
-```
-auth-hub/api                       15.6%   （大量 Gin handler 由 E2E 覆盖）
-auth-hub/db                        71.8%
-template-business-server/api       33.0%
-template-business-server/cryptox   78.9%   （核心加密逻辑）
+```bash
+go test -coverprofile=coverage.out ./... && go tool cover -func=coverage.out | tail -1
 ```
 
 > 说明：handler 层（HTTP 编排）通过下面的 Playwright E2E 做真实浏览器验证，
 > 单元测试聚焦在**纯函数、加密、数据持久化与状态机**这些"抛错也难发现"的地方。
+> 装配层（路由是否挂上、响应形状是否走样）则用不依赖数据库的黑盒 HTTP 用例覆盖，
+> 这类错误在没有外部依赖的环境里也应该被测出来，而不是等部署后才暴露。
 
 ### 10.2 Playwright E2E
 
@@ -553,7 +581,7 @@ if err != nil {
 | 工作流 | 触发 | 内容 |
 |---|---|---|
 | [`ci.yml`](.github/workflows/ci.yml) | push / PR / 手动 | ① `gofmt` + `go vet`（三模块矩阵）② `go test -race` + 覆盖率（带 PostgreSQL service container，测试自建一次性 schema）③ 两个 React 工程 `npm ci && npm run build` ④ Playwright E2E 真实浏览器跑通 SSO 全链路 |
-| [`release.yml`](.github/workflows/release.yml) | tag `v*.*.*` / 手动 | 验证 → 构建前端 → Linux amd64/arm64 二进制 + 源码包 → 自动创建 GitHub Release（template-business-server 仍依赖 sqlite 的 cgo，故需交叉工具链） |
+| [`release.yml`](.github/workflows/release.yml) | tag `v*.*.*` / 手动 | 验证 → 构建前端 → Linux amd64/arm64 二进制 + 源码包 → 自动创建 GitHub Release（三个模块全是纯 Go，`CGO_ENABLED=0` 直接交叉编译，不再需要 gcc 交叉工具链） |
 | [`deploy.yml`](.github/workflows/deploy.yml) | push 到 `main` / 手动 | 构建**两个**镜像（auth-hub 纯 Go + auth-hub-web nginx）→ `docker save` → SCP → 服务器 `docker load` → 共享网络 `idp-net` 上重启两容器 → 发现文档健康检查 + **issuer 注入断言** + **SPA 路由与反代贯通断言**。存储已外置到 PG，容器无状态、不挂数据卷 |
 
 **部署 auth-hub 需要配置的 secrets**：`HOST` `USERNAME` `SSH_KEY` `IDP_DSN` `IDP_ISSUER` `GSAC_REDIRECT_URI` `GSAC_POST_LOGOUT_URI`（可选 `PORT` `APP_PORT` `API_PORT` `IDP_SIGNING_KEY_PEM`）。
