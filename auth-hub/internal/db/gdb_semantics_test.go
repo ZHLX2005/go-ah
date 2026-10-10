@@ -70,6 +70,33 @@ func TestDataConversionSemantics(t *testing.T) {
 			t.Errorf("Counter = %+v, 期望 {used_count 1}", counter)
 		}
 	})
+
+	t.Run("false 不会被 omitempty 丢掉", func(t *testing.T) {
+		// 用途：把 is_admin 从 true 改成 false —— 唯一核心管理员的降级动作
+		// 就是它。这是本服务里**唯一**要把布尔字段写成 false 的地方，
+		// 而 omitempty 的语义恰恰是"空值不写"：一旦它连 map 输入也生效，
+		// UPDATE 的 SET 里就不会出现 is_admin，降级悄无声息地不发生，
+		// 而日志里那条「已降级 N 个账号」仍然是 0，看不出任何异常。
+		//
+		// 结论（已核对 gf v2.10.3 源码）：OmitEmpty 只在**结构体**反射分支里
+		// 被读取，且只作用于带 `json:",omitempty"` 标签的字段
+		// （gconv/internal/converter/converter_map.go:472）。map 输入走的是
+		// reflect.Map 分支，逐键原样拷贝，不受影响。
+		// 换句话说：写 false 必须用 g.Map，不能换成 do.XxxUpdate 结构体 ——
+		// 那就是 model/do 里 IsAdmin 被特意声明成 interface{} 的原因。
+		m := gdb.MapOrStructToMapDeep(g.Map{"is_admin": false}, true)
+		got, present := m["is_admin"]
+		if !present {
+			t.Fatal("is_admin 被丢弃：写 false 会静默失效，管理员降级不生效")
+		}
+		b, ok := got.(bool)
+		if !ok {
+			t.Fatalf("is_admin 被改型为 %T，期望 bool", got)
+		}
+		if b {
+			t.Error("is_admin 变成了 true")
+		}
+	})
 }
 
 // isTimeLike 判断转换后的值是否仍是时间类型。

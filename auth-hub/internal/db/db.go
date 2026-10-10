@@ -93,6 +93,16 @@ type InitOptions struct {
 	GSACRedirectURIs string
 	// GSACPostLogoutURIs gs-ac 登出回跳白名单（空格分隔）
 	GSACPostLogoutURIs string
+
+	// AdminUsername / AdminEmail / AdminPassword 唯一核心管理员的三个字段。
+	//
+	// 走参数而不是在这里直接读 config：db 包要能被测试单独构造（PG 集成测试
+	// 只给一个 DSN 就该能跑起来），一旦它自己去读全局配置，测试要么必须先
+	// 装配一遍 config，要么被默认值绑死而测不了"换一个管理员"这条路径。
+	// 留空则回落到 consts 里的开发默认值，老的调用点不必改。
+	AdminUsername string
+	AdminEmail    string
+	AdminPassword string
 }
 
 // Init 建立连接、确保 schema、建表、写种子数据。
@@ -347,7 +357,114 @@ func MaskDSN(raw string) string {
 	return u.Redacted()
 }
 
-// seed 写入预置数据：测试账号 test/test123456（管理员）与各客户端。
+// seedAdmin 保证**恰好一个**管理员账号存在，且它就是配置里的那个。
+//
+// 为什么管理员要由启动期的种子里"收敛"而不是提供一个"设为管理员"的接口：
+// 本平台的管理员拥有发邀请码的能力，而邀请码是账号进入平台的唯一入口 ——
+// 管理员因此等价于权限根。一个能被界面改动的权限根，意味着任何一次
+// 越权都可能把平台的所有权转走，而且事后从审计日志里看不出"是谁点的"。
+// 把它钉在部署配置上，改权限就等于改配置 + 重启，这一步天然留痕。
+//
+// 三步：
+//  1. 定位 —— 先按 email 找，再按 username 找。email 优先是因为它是这个人的
+//     稳定标识（登录名也是它），而 username 属于可以改的展示字段。
+//  2. 建档或提权 —— 新建时写入配置口令；已存在则**不覆盖口令**，
+//     只把 is_admin 补成 true。运维在后台改过的口令不该被一次重启打回原形。
+//  3. 降级其余 —— 剩下所有 is_admin=true 的账号一律置 false。
+//     这一步才是"唯一"的来源：旧库里那些手工提过权的账号，
+//     会在下一次启动时自动退出管理员行列。
+func seedAdmin(ctx context.Context, users string, opt InitOptions, now time.Time) error {
+	// 留空回落开发默认值，让既有调用点（含只传 DSN 的集成测试）不必改
+	username := strings.TrimSpace(opt.AdminUsername)
+	if username == "" {
+		username = consts.SeedAdminUsername
+	}
+	email := strings.TrimSpace(opt.AdminEmail)
+	if email == "" {
+		email = consts.SeedAdminEmail
+	}
+	password := opt.AdminPassword
+	if password == "" {
+		password = consts.SeedAdminPassword
+	}
+
+	var cur struct {
+		Id int64
+	}
+	found, err := scanAdmin(ctx, users, email, username, &cur)
+	if err != nil {
+		return fmt.Errorf("查询管理员账号失败: %w", err)
+	}
+
+	var adminID int64
+	if !found {
+		id, err := instance.Model(users).Ctx(ctx).Data(g.Map{
+			"username":      username,
+			"password_hash": utility.HashPassword(password),
+			"email":         email,
+			"nickname":      "管理员",
+			"is_admin":      true,
+			"created_at":    now,
+			"updated_at":    now,
+		}).InsertAndGetId()
+		if err != nil {
+			return fmt.Errorf("创建管理员账号失败: %w", err)
+		}
+		adminID = id
+		// 口令只在新建这一行时出现，且只打账号名 —— 日志会被收集、转发、
+		// 截图，写进去的明文口令等于又泄露一份
+		g.Log().Infof(ctx, "[auth-hub] 已创建唯一核心管理员: %s（邮箱 %s）", username, email)
+	} else {
+		adminID = cur.Id
+		if _, err := instance.Model(users).Ctx(ctx).Safe().
+			Where("id", adminID).
+			Data(g.Map{"is_admin": true, "updated_at": now}).Update(); err != nil {
+			return fmt.Errorf("确认管理员权限失败: %w", err)
+		}
+	}
+
+	// ── 降级其余账号，保证"唯一" ────────────────────────────────────────────
+	// WhereNot 而不是 `id <> ?`：让 gdb 去处理取反的 SQL 拼装，
+	// 手写比较运算符在换库或加括号分组时是个安静的错误来源。
+	res, err := instance.Model(users).Ctx(ctx).Safe().
+		Where("is_admin", true).
+		WhereNot("id", adminID).
+		Data(g.Map{"is_admin": false, "updated_at": now}).Update()
+	if err != nil {
+		return fmt.Errorf("收敛管理员权限失败: %w", err)
+	}
+	// gdb 的 Update 返回 sql.Result，不是受影响行数 —— 它给的是 errors，
+	// 拿不到行数时也只记日志，不让启动失败
+	demoted, err := res.RowsAffected()
+	if err != nil {
+		g.Log().Warningf(ctx, "[auth-hub] 降级非核心管理员后取不到受影响行数: %v", err)
+	} else if demoted > 0 {
+		g.Log().Warningf(ctx, "[auth-hub] 已降级 %d 个非核心管理员账号（平台只保留一个管理员）", demoted)
+	}
+	return nil
+}
+
+// scanAdmin 按 email → username 的顺序定位管理员账号。
+//
+// 顺序不能反：username 是可在后台改动的展示字段，email 才是登录名与稳定标识。
+// 用 email 先找，改名之后仍然能定位到同一个人；否则一次改名就会让 seed
+// 认不出它、转而再建一个新管理员，最终留下两个。
+func scanAdmin(ctx context.Context, users, email, username string, dst any) (bool, error) {
+	if email != "" {
+		found, err := ScanOne(ctx, instance.Model(users).Where("email", email).OrderAsc("id"), dst)
+		if err != nil || found {
+			return found, err
+		}
+	}
+	if username != "" {
+		// 另起一个 Model：gdb 的 Model 是链式的，Where 会累积上去。
+		// 复用同一个对象会把两个条件 AND 起来，于是永远查不到人。
+		return ScanOne(ctx, instance.Model(users).Where("username", username).OrderAsc("id"), dst)
+	}
+	return false, nil
+}
+
+// seed 写入预置数据：唯一核心管理员与各客户端。
 //
 // 幂等：已存在的记录不覆盖（gs-ac 客户端除外 —— 它的回调白名单随部署环境
 // 变化，必须同步成最新值，否则换域名/端口后登录会以 redirect_uri 不匹配失败）。
@@ -356,32 +473,9 @@ func seed(ctx context.Context, opt InitOptions) error {
 	users := "users"
 	clients := "o_auth_clients"
 
-	// ── 预置账号 ────────────────────────────────────────────────────────────
-	count, err := instance.Model(users).Ctx(ctx).
-		Where("username", consts.SeedUsername).Count()
-	if err != nil {
-		return fmt.Errorf("查询预置账号失败: %w", err)
-	}
-	if count == 0 {
-		if _, err := instance.Model(users).Ctx(ctx).Data(g.Map{
-			"username":      consts.SeedUsername,
-			"password_hash": utility.HashPassword(consts.SeedPassword),
-			"email":         "test@example.com",
-			"nickname":      "测试用户",
-			"is_admin":      true,
-			"created_at":    now,
-			"updated_at":    now,
-		}).Insert(); err != nil {
-			return fmt.Errorf("创建预置账号失败: %w", err)
-		}
-		g.Log().Info(ctx, "[auth-hub] 已创建预置账号: test / test123456（管理员）")
-	} else {
-		// 兼容旧库：确保 test 是管理员
-		if _, err := instance.Model(users).Ctx(ctx).Safe().
-			Where("username", consts.SeedUsername).Where("is_admin", false).
-			Data(g.Map{"is_admin": true, "updated_at": now}).Update(); err != nil {
-			return fmt.Errorf("提升预置账号权限失败: %w", err)
-		}
+	// ── 唯一核心管理员 ──────────────────────────────────────────────────────
+	if err := seedAdmin(ctx, users, opt, now); err != nil {
+		return err
 	}
 
 	// ── 模板业务平台（SPA 公共客户端，PKCE）────────────────────────────────

@@ -41,6 +41,9 @@ func run(ctx context.Context) error {
 		DSN:                cfg.DSN,
 		GSACRedirectURIs:   cfg.GSACRedirectURI,
 		GSACPostLogoutURIs: cfg.GSACPostLogoutURI,
+		AdminUsername:      cfg.AdminUsername,
+		AdminEmail:         cfg.AdminEmail,
+		AdminPassword:      cfg.AdminPassword,
 	}); err != nil {
 		return err
 	}

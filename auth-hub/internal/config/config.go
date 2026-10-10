@@ -40,6 +40,15 @@ type Config struct {
 	GSACRedirectURI string
 	// GSACPostLogoutURI gs-ac 客户端的登出回跳白名单（空格分隔多个）
 	GSACPostLogoutURI string
+
+	// AdminUsername 唯一核心管理员的账号名
+	AdminUsername string
+	// AdminEmail 唯一核心管理员的邮箱。它同时是**登录名**（登录框接受账号或邮箱），
+	// 也是 seed 定位这个账号的首选依据 —— 账号名可以改，邮箱是这个人的稳定标识。
+	AdminEmail string
+	// AdminPassword 唯一核心管理员的初始口令。只在新建时写入，
+	// 已存在的账号不会被覆盖：运维在后台改过的口令，不该被一次重启打回原形。
+	AdminPassword string
 }
 
 var current *Config
@@ -56,6 +65,9 @@ func Load(ctx context.Context) *Config {
 			"http://127.0.0.1:5173/oauth/callback http://127.0.0.1:5173/access/oidc/callback"),
 		GSACPostLogoutURI: pick(ctx, "GSAC_POST_LOGOUT_URI", "idp.gsac.postLogoutUri",
 			"http://127.0.0.1:5173/login http://127.0.0.1:5173/access/login"),
+		AdminUsername: pick(ctx, "IDP_ADMIN_USERNAME", "idp.admin.username", consts.SeedAdminUsername),
+		AdminEmail:    pick(ctx, "IDP_ADMIN_EMAIL", "idp.admin.email", consts.SeedAdminEmail),
+		AdminPassword: pick(ctx, "IDP_ADMIN_PASSWORD", "idp.admin.password", consts.SeedAdminPassword),
 	}
 	return current
 }

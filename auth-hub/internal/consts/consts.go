@@ -122,13 +122,27 @@ const (
 	MaxEmailLength = 128
 )
 
+// ── 唯一核心管理员 ──────────────────────────────────────────────────────────
+//
+// 平台**只有一个**管理员账号：它由 seed 保证存在，其余账号一律不是管理员
+// （见 db.seed 的收敛逻辑）。管理权限是"发邀请码"的前置能力，而邀请码
+// 又是账号进入本平台的唯一入口，所以这一项等于全平台的权限根。
+//
+// 这三个值只是**开发/CI 的默认值**，真实部署必须用 IDP_ADMIN_USERNAME /
+// IDP_ADMIN_EMAIL / IDP_ADMIN_PASSWORD 覆盖：本仓库是公开的，
+// 写在这里的口令等于公开的口令。默认值故意保留 test 系列，
+// 是为了让本地 go run 与 CI 的既有用例不必改配置就能跑。
+const (
+	// SeedAdminUsername 唯一核心管理员的账号名
+	SeedAdminUsername = "test"
+	// SeedAdminEmail 唯一核心管理员的邮箱，也是它的登录名
+	SeedAdminEmail = "test@example.com"
+	// SeedAdminPassword 唯一核心管理员的初始口令（仅在新建账号时写入）
+	SeedAdminPassword = "test123456"
+)
+
 // ── 预置数据 ────────────────────────────────────────────────────────────────
 const (
-	// SeedUsername 预置测试账号（管理员）
-	SeedUsername = "test"
-	// SeedPassword 预置测试账号密码
-	SeedPassword = "test123456"
-
 	// ClientTemplateWeb 模板业务平台的 client_id
 	ClientTemplateWeb = "template-web-client"
 	// ClientGSAC gs-ac 权限管理平台的 client_id

@@ -81,7 +81,7 @@ func TestInit_CreatesSchemaAndTables(t *testing.T) {
 		LastLoginAt *time.Time
 	}
 	if err := db.Instance().Model(consts.TableUser).Ctx(ctx).
-		Where("username", consts.SeedUsername).Scan(&u); err != nil {
+		Where("username", consts.SeedAdminUsername).Scan(&u); err != nil {
 		t.Fatalf("users.last_login_at 不可查询（ALTER TABLE 漏了？）: %v", err)
 	}
 	if u.LastLoginAt != nil {
@@ -89,8 +89,113 @@ func TestInit_CreatesSchemaAndTables(t *testing.T) {
 	}
 }
 
-func TestInit_SeedsTestUser(t *testing.T) {
+// TestInit_SeedsSoleAdmin 种子必须建出**唯一**核心管理员：
+// 它是平台的权限根（管理员 → 发邀请码 → 账号进入平台的唯一入口），
+// 少建了进不去后台，多建了等于多一个能转走平台所有权的人。
+func TestInit_SeedsSoleAdmin(t *testing.T) {
 	ctx := newDB(t)
+
+	var u struct {
+		Id           int64
+		Username     string
+		Email        string
+		PasswordHash string
+		IsAdmin      bool
+	}
+	if err := db.Instance().Model(consts.TableUser).Ctx(ctx).
+		Where("email", consts.SeedAdminEmail).Scan(&u); err != nil {
+		t.Fatalf("查询管理员失败: %v", err)
+	}
+	if u.Id == 0 {
+		t.Fatalf("未创建管理员 %s", consts.SeedAdminEmail)
+	}
+	if !u.IsAdmin {
+		t.Error("配置的管理员账号必须 is_admin=true，否则管理后台进不去")
+	}
+	if u.Username != consts.SeedAdminUsername {
+		t.Errorf("username = %q, 期望 %q", u.Username, consts.SeedAdminUsername)
+	}
+	if !utility.VerifyPassword(consts.SeedAdminPassword, u.PasswordHash) {
+		t.Error("管理员的口令哈希与 SeedAdminPassword 不匹配")
+	}
+
+	// 「唯一」是这一项的关键：全表 is_admin=true 的行必须恰好一条
+	assertSoleAdmin(t, ctx, u.Id)
+}
+
+// TestInit_DemotesOtherAdmins 旧库里已存在的其他管理员必须在启动时被降级。
+// 这是"唯一核心管理员"真正的落地动作 —— 只保证新账号是管理员，
+// 而放着旧管理员不管，等于权限根有两个，等于没有收敛。
+func TestInit_DemotesOtherAdmins(t *testing.T) {
+	dsn, _ := testpg.NewSchema(t)
+	ctx := gctx.New()
+
+	opt := db.InitOptions{
+		DSN:                dsn,
+		GSACRedirectURIs:   gsacRedirects,
+		GSACPostLogoutURIs: gsacPostLogout,
+	}
+	if err := db.Init(ctx, opt); err != nil {
+		t.Fatalf("首次 Init 失败: %v", err)
+	}
+
+	// 造一个"历史遗留管理员"：模拟之前手工提过权的账号
+	id, err := db.Instance().Model(consts.TableUser).Ctx(ctx).Data(map[string]any{
+		"username":      "legacy-admin",
+		"email":         "legacy@example.com",
+		"password_hash": utility.HashPassword("whatever"),
+		"is_admin":      true,
+	}).InsertAndGetId()
+	if err != nil {
+		t.Fatalf("造历史管理员失败: %v", err)
+	}
+
+	// 降级发生在 seed 里，而 seed 只在 Init 时跑 —— 再 Init 一次等同重启
+	if err := db.Init(ctx, opt); err != nil {
+		t.Fatalf("二次 Init 失败: %v", err)
+	}
+
+	var legacy struct {
+		IsAdmin bool
+	}
+	if err := db.Instance().Model(consts.TableUser).Ctx(ctx).
+		Where("id", id).Scan(&legacy); err != nil {
+		t.Fatalf("查询历史管理员失败: %v", err)
+	}
+	if legacy.IsAdmin {
+		t.Error("历史管理员未被降级：平台上仍有第二个管理员")
+	}
+
+	var admin struct{ Id int64 }
+	if err := db.Instance().Model(consts.TableUser).Ctx(ctx).
+		Where("email", consts.SeedAdminEmail).Scan(&admin); err != nil {
+		t.Fatalf("查询管理员失败: %v", err)
+	}
+	assertSoleAdmin(t, ctx, admin.Id)
+}
+
+// TestInit_AdminFollowsOptions 管理员必须跟着配置走。
+// 生产环境用 IDP_ADMIN_EMAIL/PASSWORD 指定真实管理员，这条路径不能只在
+// 默认值上验证过 —— 默认值能过、配置项没接上，是这类改动最常见的失败形态。
+func TestInit_AdminFollowsOptions(t *testing.T) {
+	dsn, _ := testpg.NewSchema(t)
+	ctx := gctx.New()
+
+	const (
+		wantUser  = "owner"
+		wantEmail = "owner@example.com"
+		wantPwd   = "a-strong-password"
+	)
+	if err := db.Init(ctx, db.InitOptions{
+		DSN:                dsn,
+		GSACRedirectURIs:   gsacRedirects,
+		GSACPostLogoutURIs: gsacPostLogout,
+		AdminUsername:      wantUser,
+		AdminEmail:         wantEmail,
+		AdminPassword:      wantPwd,
+	}); err != nil {
+		t.Fatalf("db.Init 失败: %v", err)
+	}
 
 	var u struct {
 		Id           int64
@@ -99,17 +204,53 @@ func TestInit_SeedsTestUser(t *testing.T) {
 		IsAdmin      bool
 	}
 	if err := db.Instance().Model(consts.TableUser).Ctx(ctx).
-		Where("username", consts.SeedUsername).Scan(&u); err != nil {
-		t.Fatalf("查询预置账号失败: %v", err)
+		Where("email", wantEmail).Scan(&u); err != nil {
+		t.Fatalf("查询失败: %v", err)
 	}
 	if u.Id == 0 {
-		t.Fatalf("未创建预置账号 %s", consts.SeedUsername)
+		t.Fatalf("未按配置创建管理员 %s", wantEmail)
+	}
+	if u.Username != wantUser {
+		t.Errorf("username = %q, 期望 %q", u.Username, wantUser)
 	}
 	if !u.IsAdmin {
-		t.Error("预置账号必须是管理员，否则管理后台进不去")
+		t.Error("按配置创建的管理员不是管理员")
 	}
-	if !utility.VerifyPassword(consts.SeedPassword, u.PasswordHash) {
-		t.Error("预置账号的口令哈希与 SeedPassword 不匹配")
+	if !utility.VerifyPassword(wantPwd, u.PasswordHash) {
+		t.Error("按配置创建的管理员口令不对")
+	}
+	assertSoleAdmin(t, ctx, u.Id)
+
+	// 指定了管理员就不该再建默认账号：留着它等于在公网 IdP 上
+	// 挂一个口令写在常量里的可登录账号
+	n, err := db.Instance().Model(consts.TableUser).Ctx(ctx).
+		Where("username", consts.SeedAdminUsername).Count()
+	if err != nil {
+		t.Fatalf("统计默认账号失败: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("配置了管理员之后仍建出了默认账号 %s", consts.SeedAdminUsername)
+	}
+}
+
+// assertSoleAdmin 断言全表只有 adminID 一个管理员
+func assertSoleAdmin(t *testing.T, ctx context.Context, adminID int64) {
+	t.Helper()
+	admins, err := db.Instance().Model(consts.TableUser).Ctx(ctx).
+		Where("is_admin", true).Count()
+	if err != nil {
+		t.Fatalf("统计管理员失败: %v", err)
+	}
+	if admins != 1 {
+		t.Errorf("管理员数量 = %d, 期望恰好 1", admins)
+	}
+	var only struct{ Id int64 }
+	if err := db.Instance().Model(consts.TableUser).Ctx(ctx).
+		Where("is_admin", true).Scan(&only); err != nil {
+		t.Fatalf("查询管理员失败: %v", err)
+	}
+	if only.Id != adminID {
+		t.Errorf("唯一管理员 id = %d, 期望 %d", only.Id, adminID)
 	}
 }
 
@@ -228,9 +369,9 @@ func TestInit_SyncsGSACRedirectURIs(t *testing.T) {
 	}
 }
 
-// TestInit_KeepsExistingTestUserPassword 账号已存在时不覆盖口令：
+// TestInit_KeepsExistingAdminPassword 账号已存在时不覆盖口令：
 // 否则每次部署都会把用户改过的密码打回默认值
-func TestInit_KeepsExistingTestUserPassword(t *testing.T) {
+func TestInit_KeepsExistingAdminPassword(t *testing.T) {
 	dsn, _ := testpg.NewSchema(t)
 	ctx := gctx.New()
 
@@ -246,7 +387,7 @@ func TestInit_KeepsExistingTestUserPassword(t *testing.T) {
 	// 用户改了密码
 	changed := utility.HashPassword("a-different-password")
 	if _, err := db.Instance().Model(consts.TableUser).Ctx(ctx).
-		Where("username", consts.SeedUsername).
+		Where("username", consts.SeedAdminUsername).
 		Data(map[string]any{"password_hash": changed}).Update(); err != nil {
 		t.Fatalf("改密失败: %v", err)
 	}
@@ -259,7 +400,7 @@ func TestInit_KeepsExistingTestUserPassword(t *testing.T) {
 		PasswordHash string
 	}
 	if err := db.Instance().Model(consts.TableUser).Ctx(ctx).
-		Where("username", consts.SeedUsername).Scan(&u); err != nil {
+		Where("username", consts.SeedAdminUsername).Scan(&u); err != nil {
 		t.Fatalf("查询失败: %v", err)
 	}
 	if !utility.VerifyPassword("a-different-password", u.PasswordHash) {

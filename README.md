@@ -83,7 +83,7 @@ go-ah/
 export IDP_DSN='postgres://postgres:pw@127.0.0.1:5432/postgres?sslmode=disable&search_path=auth_hub'
 cd auth-hub/web/idp-web && npm install && npm run build
 cd ../../ && go run main.go
-#    auth-hub 首次启动会自动建 schema、建表、写入种子（预置账号与客户端）
+#    auth-hub 首次启动会自动建 schema、建表、写入种子（唯一核心管理员与客户端）
 
 # ② 新开终端：构建并启动模板业务平台（127.0.0.1:8081）
 export BIZ_TOKEN_SECRET=$(openssl rand -hex 32)   # 必填：Token 加密密钥
@@ -100,14 +100,29 @@ cd ../../ && go run main.go
 | OIDC 发现文档 | http://127.0.0.1:8080/.well-known/openid-configuration |
 | JWKS 公钥 | http://127.0.0.1:8080/.well-known/jwks.json |
 
-**预置账号：`test / test123456`**（首次启动自动种子生成）
+**唯一核心管理员：由 `IDP_ADMIN_EMAIL` / `IDP_ADMIN_PASSWORD` 指定**（首次启动自动建档）。
+
+> 不配置时回落到代码内置的 `test / test123456` —— 那是**开发默认值**，不是生产账号。
+> 本仓库是公开的，把这个口令部署到公网等于公开一个可登录账号；`deploy.yml` 的
+> Preflight 会直接拒绝这种部署。开发阶段要自己指定，就照下面这样起：
+>
+> ```bash
+> export IDP_ADMIN_USERNAME=admin
+> export IDP_ADMIN_EMAIL=you@example.com
+> export IDP_ADMIN_PASSWORD='至少八位'
+> ```
+>
+> 平台**只保留一个管理员**：启动时的种子会把其他 `is_admin=true` 的账号一律降级，
+> 并在日志里打出降级条数（`已降级 N 个非核心管理员账号`）。详见 §5.4。
+>
+> 登录时**账号栏填账号名或邮箱都行**（`Username` 这个字段名沿用历史，语义是"登录名"）。
 
 > 开发阶段（部署方案B）：前端可在各自 web 目录 `npm run dev`（5173/5174 端口，已配代理），生产再 `npm run build` 交给 Go 托管。
 
 ## 4. 端到端测试步骤（浏览器可视化）
 
 1. 浏览器访问 **http://127.0.0.1:8081** → 检测无登录态，自动生成 `state / code_verifier / code_challenge(S256)`，302 跳转 auth-hub 登录页
-2. 输入 `test / test123456` 登录（可试错密码，页面提示「账号不存在 / 密码错误」）
+2. 输入管理员账号或邮箱 + 口令登录（可试错密码，页面提示「账号或邮箱不存在 / 密码错误」）
 3. 进入 **授权确认页**，展示应用名「模板业务平台」与 `openid / profile / email` 权限，点【同意授权】
 4. 302 携带 `code & state` 回调 `/oauth/callback` → 前端校验 state → 提交 `code + code_verifier` 给业务后端 → 后端调 auth-hub `/oauth2/token` 换取令牌 → SDK 校验 `id_token`（iss/aud/exp/RS256签名）→ 建立业务会话
 5. 回到首页，展示 `sub / username / nickname / email` 与令牌保管状态
@@ -136,7 +151,7 @@ cd ../../ && go run main.go
 
 ### 5.1 管理后台 API（需管理员会话）
 
-访问路径 `/admin`（前端）→ 后端 `/api/admin/*`，统一由 `RequireAdmin` 中间件保护：未登录返回 **401**，已登录但非管理员返回 **403**。预置账号 `test` 为管理员。
+访问路径 `/admin`（前端）→ 后端 `/api/admin/*`，统一由 `RequireAdmin` 中间件保护：未登录返回 **401**，已登录但非管理员返回 **403**。管理员是**唯一**的那个，由部署配置指定（见 §5.4），不是固定账号名。
 
 | 接口 | 说明 |
 |---|---|
@@ -219,6 +234,39 @@ WHERE id = ? AND used_count < max_uses
 **公网黑盒验收**：在 47 服务器上跑真实浏览器（管理员发码 → 受邀者凭码注册 → 走完整 OIDC 进业务平台 →
 配额与明细可追溯 → 停用/删除即时生效）**16/16 通过、页面 JS 异常 0**。
 记录与截图见 go-ac 仓库的 `docs/acceptance-invite.md` 与 `docs/acceptance/invite-register/`。
+
+### 5.4 唯一核心管理员
+
+平台管理员拥有"发邀请码"的能力，而邀请码又是账号进入本平台的**唯一入口** ——
+所以管理员等价于权限根。这一项因此不做成界面功能，而是钉在部署配置上：
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `IDP_ADMIN_USERNAME` | `admin`（部署）/ `test`（代码默认） | 账号名 |
+| `IDP_ADMIN_EMAIL` | 无（**部署必填**） | 邮箱。**同时是登录名** —— 登录框接受账号或邮箱 |
+| `IDP_ADMIN_PASSWORD` | 无（**部署必填**） | 首次新建该账号时写入 |
+
+启动时 `db.seed` 分三步收敛：
+
+1. **定位** —— 先按 `email` 找，再按 `username` 找。email 优先，因为它是这个人的稳定标识；
+   `username` 是可以在后台改的展示字段，只按它找的话，一次改名就会让种子认不出这个人、
+   转而再建一个新管理员，最终留下两个。
+2. **建档或提权** —— 不存在则建档（写入配置口令、`is_admin=true`）；已存在则只把 `is_admin`
+   补成 `true`，**不覆盖口令**。运维在后台改过的密码，不该被一次重启打回原形。
+3. **降级其余** —— `UPDATE users SET is_admin=false WHERE is_admin=true AND id <> 管理员`。
+   这一步才是"唯一"的来源：旧库里手工提过权的账号，会在下一次启动时自动退出管理员行列，
+   日志里会打出 `已降级 N 个非核心管理员账号`。
+
+几条容易踩的：
+
+- **登录名两种都行**，因为这串输入先当账号查、再当邮箱查。两者不会互相遮蔽：账号字符集
+  不允许 `@`，所以含 `@` 的输入不可能命中账号分支。
+- **改管理员 = 改配置 + 重启**，没有"设为管理员"的接口。要换人，把 `IDP_ADMIN_EMAIL`
+  改成新邮箱即可：旧账号会被第 3 步降级，新账号被第 2 步提权（口令沿用配置值）。
+- **默认值不是生产账号**。代码里的默认是 `test / test123456`（公开仓库 = 公开口令），
+  `deploy.yml` 的 Preflight 检测到默认值会直接让部署失败。
+- 登录页曾经有个「一键填充 test / test123456」的按钮，已删除：带真实口令构建一次，
+  口令就会进公开可下载的 JS 产物。
 
 ## 6. 业务平台接口
 
@@ -309,7 +357,7 @@ WHERE id = ? AND used_count < max_uses
 | # | 验收项 | 结果 |
 |---|---|---|
 | 1 | 访问业务首页自动跳转 auth-hub React 登录页 | ✅ |
-| 2 | test/test123456 登录进入授权确认页；错误密码提示 | ✅ |
+| 2 | 管理员账号（或邮箱）+ 口令登录进入授权确认页；错误密码提示 | ✅ |
 | 3 | 同意授权回调业务平台，首页展示用户信息 | ✅ |
 | 4 | 受保护接口 `/api/profile` 鉴权 200 | ✅ |
 | 5 | 统一登出后业务接口 401、`/oauth2/auth` 重新要求登录 | ✅ |
@@ -385,7 +433,7 @@ npm test                     # 27 个用例，串行约 2 分钟
 
 ### 11.1 在认证中心注册客户端（管理后台）
 
-访问 `http://127.0.0.1:8080/admin`，用 `test / test123456` 登录，在「客户端管理」新建：
+访问 `http://127.0.0.1:8080/admin`，用管理员账号（或配置的邮箱）+ 口令登录，在「客户端管理」新建：
 
 | 字段 | 值 | 说明 |
 |---|---|---|
@@ -635,6 +683,9 @@ if err != nil {
 | auth-hub | `IDP_ADDR` `IDP_WEB_DIST` | `127.0.0.1:8080` `./web/idp-web/dist` |
 | auth-hub | `IDP_ISSUER` **（生产必填）** | `http://127.0.0.1:8080`；本地 `go run` 时就是本机地址。**生产部署后必须改成前端 nginx 的对外地址**（例如 `http://<服务器IP>:8082`），原因见下方部署小节 |
 | auth-hub | `GSAC_REDIRECT_URI` `GSAC_POST_LOGOUT_URI` | 本地开发默认值；生产须设成 gs-ac 前端的真实地址（空格分隔多个，任一命中即通过） |
+| auth-hub | `IDP_ADMIN_EMAIL` **（生产必填）** | 无默认。唯一核心管理员的邮箱，也是它的登录名，见 §5.4 |
+| auth-hub | `IDP_ADMIN_PASSWORD` **（生产必填）** | 无默认。仅在新建该账号时写入，已存在则不覆盖 |
+| auth-hub | `IDP_ADMIN_USERNAME` | `test`（代码默认）/ `admin`（部署脚本默认）。管理员的账号名 |
 | auth-hub | `IDP_SIGNING_KEY_PEM` | 空。填入固定 RSA 私钥（PKCS#8 PEM）后密钥不落库；**多副本部署必须设置**，否则各副本各自生成、互相验签失败 |
 | 业务 | `BIZ_ADDR` `BIZ_DB` `BIZ_WEB_DIST` `IDP_ISSUER` `OIDC_CLIENT_ID` `OIDC_REDIRECT_URI` `OIDC_POST_LOGOUT_URI` | `127.0.0.1:8081` `template.db` `./web/template-web/dist` `http://127.0.0.1:8080` `template-web-client` `http://127.0.0.1:8081/oauth/callback` `http://127.0.0.1:8081/` |
 | 业务 | **`BIZ_TOKEN_SECRET`**（**必填**，≥16 字符） | 无默认，缺失即拒绝启动 |

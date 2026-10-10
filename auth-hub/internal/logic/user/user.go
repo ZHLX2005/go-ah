@@ -14,6 +14,7 @@ import (
 	"context"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -76,14 +77,47 @@ func FindByID(ctx context.Context, id int64) (*entity.User, error) {
 	return &u, nil
 }
 
-// Authenticate 校验账号口令，成功返回用户
-func Authenticate(ctx context.Context, username, password string) (*entity.User, error) {
-	u, err := FindByUsername(ctx, username)
+// FindByEmail 按邮箱查用户；不存在返回 (nil, nil)。
+//
+// 取 id 最小的那条而不是"随便一条"：users.email 上没有唯一索引，
+// 同一邮箱在库里可能存在多行（历史数据、手工插入）。不定序的查询会
+// 让"同一个邮箱今天登进 A 账号、明天登进 B 账号"变成偶发故障，
+// 而偶发故障的排查成本远高于这里多写一个 OrderAsc。
+func FindByEmail(ctx context.Context, email string) (*entity.User, error) {
+	var u entity.User
+	found, err := db.ScanOne(ctx, dao.User.Ctx(ctx).Where("email", email).OrderAsc("id"), &u)
 	if err != nil {
 		return nil, err
 	}
+	if !found {
+		return nil, nil
+	}
+	return &u, nil
+}
+
+// Authenticate 校验登录名与口令，成功返回用户。
+//
+// 登录名既可以是**账号**也可以是**邮箱**：管理员是按邮箱配置的
+// （IDP_ADMIN_EMAIL），要求使用者记住"这个邮箱对应的账号名是 admin"
+// 是一件只有写代码的人才知道的事。
+//
+// 两种登录名不会互相遮蔽：账号字符集 usernameRe 不允许 '@'，
+// 所以一个含 '@' 的输入不可能命中 username 分支；反过来，某个账号名
+// 恰好等于别人邮箱地址这种情况在结构上就不存在。顺序因此只影响
+// "不含 @ 的输入要不要多查一次邮箱"，不影响正确性。
+func Authenticate(ctx context.Context, identifier, password string) (*entity.User, error) {
+	identifier = strings.TrimSpace(identifier)
+	u, err := FindByUsername(ctx, identifier)
+	if err != nil {
+		return nil, err
+	}
+	if u == nil && strings.Contains(identifier, "@") {
+		if u, err = FindByEmail(ctx, identifier); err != nil {
+			return nil, err
+		}
+	}
 	if u == nil {
-		return nil, &AuthError{ErrorCode: "user_not_found", Message: "账号不存在"}
+		return nil, &AuthError{ErrorCode: "user_not_found", Message: "账号或邮箱不存在"}
 	}
 	if !utility.VerifyPassword(password, u.PasswordHash) {
 		return nil, &AuthError{ErrorCode: "wrong_password", Message: "密码错误"}

@@ -28,7 +28,7 @@ export default function LoginPage() {
 
     // 前端先挡一道：空提交没必要打后端
     if (!username.trim()) {
-      setErr('请输入账号')
+      setErr('请输入账号或邮箱')
       return
     }
     if (!password) {
@@ -63,12 +63,12 @@ export default function LoginPage() {
         <div className="auth-divider" />
 
         <form onSubmit={onSubmit} className="stack" style={{ gap: 14 }}>
-          <Field label="账号">
+          <Field label="账号或邮箱">
             <Input
               size="lg"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              placeholder="请输入账号"
+              placeholder="账号或邮箱"
               autoComplete="username"
               autoFocus
             />
@@ -92,21 +92,11 @@ export default function LoginPage() {
           </Button>
         </form>
 
-        <div className="auth-divider" />
-
-        <p className="dim" style={{ fontSize: 12, textAlign: 'center', margin: '0 0 8px' }}>
-          预置测试账号
-        </p>
-        <Button
-          block
-          type="button"
-          onClick={() => {
-            setUsername('test')
-            setPassword('test123456')
-          }}
-        >
-          一键填充：test / test123456
-        </Button>
+        {/* 这里曾经有一个「一键填充 test / test123456」的按钮。
+            它在演示环境里很省事，但只要有一次带真实口令的部署被构建，
+            口令就作为字面量进了公开可下载的 JS 产物（以及浏览器缓存、
+            CDN 日志）。管理员的取值本来就由 IDP_ADMIN_* 配置决定，
+            前端无从得知也不该知道，所以整块删掉而不是改成读环境变量。 */}
 
         <div className="auth-divider" />
 
@@ -134,7 +124,7 @@ export default function LoginPage() {
  */
 function loginErrorText(e: unknown): string {
   if (e instanceof ApiFailure) {
-    if (e.reason === 'user_not_found') return '账号不存在'
+    if (e.reason === 'user_not_found') return '账号或邮箱不存在'
     if (e.reason === 'wrong_password') return '密码错误'
     if (e.status === 0) return '无法连接认证中心，请确认服务已启动'
     return e.message

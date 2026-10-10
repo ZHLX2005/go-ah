@@ -5,6 +5,7 @@ import {
   TEST_USER,
   loginWithPKCE,
   fetchBizProfile,
+  fetchIDPMe,
   assertServicesUp,
 } from './helpers'
 
@@ -14,9 +15,10 @@ import {
  * 覆盖：
  *  1. 未登录访问业务首页自动跳转 IDP（携带 PKCE 参数）
  *  2. 错误密码被拒绝
- *  3. 正确登录 -> 授权确认页 -> 回调换 token -> 建立业务会话
- *  4. 受保护接口鉴权通过
- *  5. 统一登出后业务接口 401、IDP 重新要求登录
+ *  3. 账号栏填邮箱同样能登录
+ *  4. 正确登录 -> 授权确认页 -> 回调换 token -> 建立业务会话
+ *  5. 受保护接口鉴权通过
+ *  6. 统一登出后业务接口 401、IDP 重新要求登录
  */
 test.describe('OIDC PKCE 授权码流程', () => {
   test.beforeEach(async ({ page }) => {
@@ -76,12 +78,27 @@ test.describe('OIDC PKCE 授权码流程', () => {
     await page.click('button[type=submit]')
 
     // 应停留在登录页并显示错误
-    await expect(page.locator('text=/密码错误|账号不存在|用户名或密码/')).toBeVisible({
+    await expect(page.locator('text=/密码错误|账号(或邮箱)?不存在|用户名或密码/')).toBeVisible({
       timeout: 10_000,
     })
     expect(page.url()).toContain('/login')
 
     await page.screenshot({ path: 'screenshots/02-idp-login-error.png' })
+  })
+
+  test('账号栏填邮箱同样能登录（登录名收两种）', async ({ page }) => {
+    // 管理员的身份是由 IDP_ADMIN_EMAIL 配置的邮箱，不是账号名。
+    // 若登录只认账号名，配了邮箱的人会拿到一个自己登不进去的管理员 ——
+    // 这条用例卡的就是这个：整条 OIDC 流程走通，而不是只看登录接口返回码。
+    await loginWithPKCE(page, {
+      user: { username: TEST_USER.email, password: TEST_USER.password },
+    })
+
+    expect(page.url()).toMatch(/127\.0\.0\.1:8081\/(\?.*)?$/)
+
+    // 业务侧确实建了会话，而不是停在某个中间页
+    const me = await fetchIDPMe(page)
+    expect(me.status).toBe(200)
   })
 
   test('完整 PKCE 登录流程：登录 -> 授权 -> 回调 -> 建立业务会话', async ({ page }) => {

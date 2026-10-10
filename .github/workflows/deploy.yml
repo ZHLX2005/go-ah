@@ -56,6 +56,8 @@ jobs:
         GSAC_REDIRECT_URI: ${{ secrets.GSAC_REDIRECT_URI }}
         GSAC_POST_LOGOUT_URI: ${{ secrets.GSAC_POST_LOGOUT_URI }}
         APP_PORT: ${{ secrets.APP_PORT }}
+        IDP_ADMIN_EMAIL: ${{ secrets.IDP_ADMIN_EMAIL }}
+        IDP_ADMIN_PASSWORD: ${{ secrets.IDP_ADMIN_PASSWORD }}
       run: |
         set -euo pipefail
         fail=0
@@ -72,6 +74,11 @@ jobs:
         check IDP_ISSUER "$IDP_ISSUER"
         check GSAC_REDIRECT_URI "$GSAC_REDIRECT_URI"
         check GSAC_POST_LOGOUT_URI "$GSAC_POST_LOGOUT_URI"
+        # 管理员是必需项而不是可选项：不配就会回落到代码里写着明文口令的
+        # 默认账号（test / test123456），那是**公网可登录**的账号。
+        # 让它在这里挡住，比部署成功之后被人登进来强。
+        check IDP_ADMIN_EMAIL "$IDP_ADMIN_EMAIL"
+        check IDP_ADMIN_PASSWORD "$IDP_ADMIN_PASSWORD"
 
         if [ "$fail" -ne 0 ]; then
           cat <<'EOF'
@@ -86,11 +93,14 @@ jobs:
           GSAC_REDIRECT_URI     go-ac 前端回调，须与 go-ac 的 OIDC_REDIRECT_URI 一致，
                                 形如 http://<服务器IP>:8081/oauth/callback
           GSAC_POST_LOGOUT_URI  go-ac 前端登录页，须与 go-ac 的 OIDC_POST_LOGOUT_URI 一致
+          IDP_ADMIN_EMAIL       唯一核心管理员的邮箱，同时是它的登录名
+          IDP_ADMIN_PASSWORD    唯一核心管理员的口令（首次启动写入，之后不覆盖）
 
         可选：
           PORT                  SSH 端口，默认 22
           APP_PORT              前端 nginx 宿主端口，默认 8082
           API_PORT              后端 API 宿主端口，默认 8080
+          IDP_ADMIN_USERNAME    管理员账号名，默认 admin
           IDP_SIGNING_KEY_PEM   固定 RSA 私钥（PKCS#8 PEM）。仅多副本时需要。
         EOF
           exit 1
@@ -119,6 +129,24 @@ jobs:
           postgres://*|postgresql://*) ;;
           *) echo "::error::IDP_DSN 必须是 postgres:// 或 postgresql:// 连接串"; exit 1 ;;
         esac
+
+        # 管理员三项：这里校验的规则必须与代码里 ValidateNewAccount 的一致，
+        # 否则会出现"前置校验通过、启动时才报错"的错位
+        # （落库前的邮箱校验用的是同一个宽容正则）。
+        case "$IDP_ADMIN_EMAIL" in
+          *@*.*) ;;
+          *) echo "::error::IDP_ADMIN_EMAIL 不像邮箱：$IDP_ADMIN_EMAIL"; exit 1 ;;
+        esac
+        if [ "${#IDP_ADMIN_PASSWORD}" -lt 8 ]; then
+          echo "::error::IDP_ADMIN_PASSWORD 至少 8 位（当前 ${#IDP_ADMIN_PASSWORD} 位）"
+          exit 1
+        fi
+        # 管理员与默认值相同 = 没有真正配置，等于把公开仓库里的口令部署上去
+        if [ "$IDP_ADMIN_EMAIL" = "test@example.com" ] || [ "$IDP_ADMIN_PASSWORD" = "test123456" ]; then
+          echo "::error::管理员仍在用代码内置的默认值（test@example.com / test123456）。"
+          echo "         本仓库是公开的，这等于把口令公开。请配置 IDP_ADMIN_EMAIL / IDP_ADMIN_PASSWORD。"
+          exit 1
+        fi
 
         echo "前置校验通过（IDP_DSN 已配置，不回显；SSH → ${{ secrets.USERNAME }}@${{ secrets.HOST }}）"
 
@@ -201,6 +229,12 @@ jobs:
           GSAC_REDIRECT_URI="${{ secrets.GSAC_REDIRECT_URI }}"
           GSAC_POST_LOGOUT_URI="${{ secrets.GSAC_POST_LOGOUT_URI }}"
 
+          # 唯一核心管理员。少了这几项，后端会回落到代码里写着明文口令的
+          # 默认账号，所以 Preflight 已经把它们列为必需项。
+          IDP_ADMIN_USERNAME="${{ secrets.IDP_ADMIN_USERNAME || 'admin' }}"
+          IDP_ADMIN_EMAIL="${{ secrets.IDP_ADMIN_EMAIL }}"
+          IDP_ADMIN_PASSWORD="${{ secrets.IDP_ADMIN_PASSWORD }}"
+
           echo "本次部署 revision: ${{ github.sha }}"
 
           # Step 1: 停并删旧容器（先停前端，避免它把请求打到已摘掉的后端）
@@ -252,7 +286,10 @@ jobs:
             -e IDP_DSN="$IDP_DSN" \
             -e IDP_ISSUER="$IDP_ISSUER" \
             -e GSAC_REDIRECT_URI="$GSAC_REDIRECT_URI" \
-            -e GSAC_POST_LOGOUT_URI="$GSAC_POST_LOGOUT_URI"
+            -e GSAC_POST_LOGOUT_URI="$GSAC_POST_LOGOUT_URI" \
+            -e IDP_ADMIN_USERNAME="$IDP_ADMIN_USERNAME" \
+            -e IDP_ADMIN_EMAIL="$IDP_ADMIN_EMAIL" \
+            -e IDP_ADMIN_PASSWORD="$IDP_ADMIN_PASSWORD"
 
           # 只在配了固定密钥时才传：空值对代码而言等同于未设置，但会让
           # `docker inspect` 里多出一个空变量，徒增困惑
@@ -355,8 +392,34 @@ jobs:
           fi
           echo "  经 nginx 的发现文档 issuer 一致 ✓"
 
-          echo "Step 11: 日志摘要…"
-          docker logs $BACKEND_NAME 2>&1 | grep -iE "PostgreSQL|schema|签名密钥|已注册客户端|预置账号" | tail -8 || true
+          echo "Step 11: 校验唯一核心管理员已就位…"
+          # 只断言"这个登录名存在"，不断言"口令正确"：种子刻意不覆盖已存在账号的
+          # 口令（运维改过密码不该被一次部署打回原形），所以拿配置口令去登
+          # 在改过密码的库上必然 401 —— 那是正常的，不该让部署失败。
+          # user_not_found 才是真问题：说明 IDP_ADMIN_EMAIL 没被接上，
+          # 或者账号压根没建出来。
+          LOGIN_BODY=$(curl -s --max-time 10 -X POST "${IDP_ISSUER}/api/login" \
+            -H 'Content-Type: application/json' \
+            -d "{\"username\":\"${IDP_ADMIN_EMAIL}\",\"password\":\"${IDP_ADMIN_PASSWORD}\"}" 2>/dev/null || true)
+          case "$LOGIN_BODY" in
+            *'"code":0'*)
+              echo "  ${IDP_ADMIN_EMAIL} 登录成功 ✓"
+              ;;
+            *user_not_found*)
+              echo "ERROR: 管理员 ${IDP_ADMIN_EMAIL} 不存在，登录接口返回：$LOGIN_BODY"
+              echo "  IDP_ADMIN_EMAIL 多半没传进容器（检查 docker run 的 -e），"
+              echo "  或者启动日志里 seed 那一步失败了。"
+              docker logs $BACKEND_NAME --tail 60
+              exit 1
+              ;;
+            *)
+              echo "  ${IDP_ADMIN_EMAIL} 账号已存在（口令与配置不一致，或库中另有口令），响应：$LOGIN_BODY"
+              echo "  这是允许的状态：种子只在新建账号时写入口令。"
+              ;;
+          esac
+
+          echo "Step 12: 日志摘要…"
+          docker logs $BACKEND_NAME 2>&1 | grep -iE "PostgreSQL|schema|签名密钥|已注册客户端|核心管理员|降级" | tail -8 || true
 
           echo "部署成功！"
           echo "  认证中心前端: ${IDP_ISSUER}   （issuer 就是这个地址）"

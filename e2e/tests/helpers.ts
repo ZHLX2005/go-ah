@@ -4,8 +4,27 @@ import { Page, expect } from '@playwright/test'
 export const IDP = 'http://127.0.0.1:8080'
 export const BIZ = 'http://127.0.0.1:8081'
 
-/** 预置账号 */
-export const TEST_USER = { username: 'test', password: 'test123456' }
+/**
+ * 唯一核心管理员的凭据。
+ *
+ * CI（ci.yml 的 E2E 作业）只注入 IDP_DSN，管理员因此取代码里的开发默认值，
+ * 与这三个值一致。**改了 auth-hub 的 SeedAdmin* 常量就要同步改这里** ——
+ * 否则整批用例会以「账号或邮箱不存在」失败，而不是以某个更直白的方式报错。
+ *
+ * email 单独列出来是为了让「账号栏填邮箱也能登录」这条用例有据可依：
+ * 邮箱是管理员的稳定标识，账号名反而是可以改的展示字段。
+ */
+export const TEST_USER = {
+  username: 'test',
+  email: 'test@example.com',
+  password: 'test123456',
+}
+
+/** 登录时用的凭据：账号名或邮箱都行，默认用账号名 */
+export type LoginIdentity = {
+  username: string
+  password: string
+}
 
 /** 截图输出目录 */
 export const SHOT_DIR = 'screenshots'
@@ -18,9 +37,14 @@ export const SHOT_DIR = 'screenshots'
  */
 export async function loginWithPKCE(
   page: Page,
-  opts: { startPath?: string; screenshotPrefix?: string } = {},
+  opts: {
+    startPath?: string
+    screenshotPrefix?: string
+    /** 用哪套凭据登录，默认 TEST_USER。用来验证「账号或邮箱」两种登录名 */
+    user?: LoginIdentity
+  } = {},
 ) {
-  const { startPath = '/', screenshotPrefix } = opts
+  const { startPath = '/', screenshotPrefix, user = TEST_USER } = opts
 
   await page.goto(BIZ + startPath, { waitUntil: 'domcontentloaded' })
 
@@ -30,8 +54,8 @@ export async function loginWithPKCE(
   // 1) 登录页（若已有 IDP 会话会直接进授权页）
   if (page.url().includes('/login')) {
     await page.waitForSelector('input[type=text]')
-    await page.fill('input[type=text]', TEST_USER.username)
-    await page.fill('input[type=password]', TEST_USER.password)
+    await page.fill('input[type=text]', user.username)
+    await page.fill('input[type=password]', user.password)
     if (screenshotPrefix) {
       await page.screenshot({ path: `${SHOT_DIR}/${screenshotPrefix}-idp-login.png` })
     }

@@ -80,11 +80,11 @@ func setup(t *testing.T) (context.Context, *entity.User) {
 	}
 
 	var u entity.User
-	if err := dao.User.Ctx(ctx).Where("username", consts.SeedUsername).Scan(&u); err != nil {
-		t.Fatalf("查询预置用户失败: %v", err)
+	if err := dao.User.Ctx(ctx).Where("username", consts.SeedAdminUsername).Scan(&u); err != nil {
+		t.Fatalf("查询管理员用户失败: %v", err)
 	}
 	if u.Id == 0 {
-		t.Fatal("预置用户不存在")
+		t.Fatal("管理员用户不存在")
 	}
 	return ctx, &u
 }

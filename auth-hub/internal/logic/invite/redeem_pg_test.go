@@ -589,7 +589,7 @@ func TestCheckUsernameFree(t *testing.T) {
 	assertInviteError(t, err, invite.KindConflict, invite.CodeUsernameTaken)
 
 	// 种子账号也算被占用
-	err = invite.CheckUsernameFree(ctx, consts.SeedUsername)
+	err = invite.CheckUsernameFree(ctx, consts.SeedAdminUsername)
 	assertInviteError(t, err, invite.KindConflict, invite.CodeUsernameTaken)
 }
 
