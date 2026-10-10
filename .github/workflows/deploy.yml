@@ -214,8 +214,11 @@ jobs:
           # 剩余部分交给外层 shell 解析，症状是前面的步骤正常输出、从断点之后
           # 全部丢失，最后报一句与真正原因无关的
           # 「unexpected EOF while looking for matching )」。
-          # 需要引号时一律用双引号；${{ }} 里的单引号在 Actions 阶段就被替换掉了，
-          # 不影响这一点。
+          # 需要引号时一律用双引号。注意：注释里也不能出现 Actions 表达式的
+          # 起始符号（美元紧跟两层花括号）—— 它会被当表达式求值，
+          # 一个空表达式就足以让整个 workflow 加载失败（本次实测踩过：
+          # 连 job 都没创建，报的是 "workflow file issue"）。
+          # 真正的表达式只放在需要取值的地方（如 IDP_ADMIN_USERNAME 那行）。
           bash -c '
           set -e
 
