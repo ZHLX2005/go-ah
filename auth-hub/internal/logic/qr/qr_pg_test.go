@@ -47,9 +47,9 @@ func newDB(t *testing.T) context.Context {
 // seedUserID 取种子管理员账号的 id，作为"手机上已登录的那个用户"
 func seedUserID(t *testing.T, ctx context.Context) int64 {
 	t.Helper()
-	u, err := user.FindByUsername(ctx, consts.SeedUsername)
+	u, err := user.FindByUsername(ctx, consts.SeedAdminUsername)
 	if err != nil || u == nil {
-		t.Fatalf("取种子账号 %s 失败: u=%v err=%v", consts.SeedUsername, u, err)
+		t.Fatalf("取种子账号 %s 失败: u=%v err=%v", consts.SeedAdminUsername, u, err)
 	}
 	return u.Id
 }
