@@ -6,6 +6,12 @@
 // 于是把 OrderAsc、把 '@' 分支写错都测不出来。
 //
 // 未配置 AUTH_HUB_TEST_DSN 时整包跳过（本地没库不该看到一片红）。
+//
+// ⚠️ 测试里的账号口令一律用**明显是占位**的值（`fixture-pass` / `owner-password`），
+// 邮箱用 `@example.com` 这类保留域。不要图省事拿真实部署里的凭据当测试夹具 ——
+// 这里起初就抄了一次线上管理员的口令，于是那串口令进了公开仓库，
+// 而它在生产上**同时是有效的**。夹具和凭据必须长得不像，
+// 因为代码里的任何字面量都等于公开的字面量。
 package user_test
 
 import (
@@ -74,7 +80,7 @@ func addUser(t *testing.T, ctx context.Context, username, email, password string
 
 func TestAuthenticate_ByUsernameAndByEmail(t *testing.T) {
 	ctx := newDB(t)
-	id := addUser(t, ctx, "zhao", "2096343460@qq.com", "REDACTED")
+	id := addUser(t, ctx, "zhao", "zhao@example.com", "fixture-pass")
 
 	for _, tc := range []struct {
 		name       string
@@ -83,11 +89,11 @@ func TestAuthenticate_ByUsernameAndByEmail(t *testing.T) {
 		{"按账号", "zhao"},
 		// 管理员是按邮箱配的，所以"邮箱也能当登录名"是这个功能的半边天：
 		// 少了它，配 IDP_ADMIN_EMAIL 的人会拿到一个自己登不进去的账号
-		{"按邮箱", "2096343460@qq.com"},
+		{"按邮箱", "zhao@example.com"},
 		{"账号带首尾空格", "  zhao  "},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			u, err := user.Authenticate(ctx, tc.identifier, "REDACTED")
+			u, err := user.Authenticate(ctx, tc.identifier, "fixture-pass")
 			if err != nil {
 				t.Fatalf("Authenticate(%q) 失败: %v", tc.identifier, err)
 			}
@@ -119,7 +125,7 @@ func TestAuthenticate_AdminByEmail(t *testing.T) {
 // 这里断言的是**原因码**，不是文案 —— 文案会改，联调方依赖的是码。
 func TestAuthenticate_FailureCodes(t *testing.T) {
 	ctx := newDB(t)
-	addUser(t, ctx, "zhao", "2096343460@qq.com", "REDACTED")
+	addUser(t, ctx, "zhao", "zhao@example.com", "fixture-pass")
 
 	for _, tc := range []struct {
 		name       string
@@ -131,8 +137,8 @@ func TestAuthenticate_FailureCodes(t *testing.T) {
 		// 带 @ 的输入会走邮箱分支，同样要落到"不存在"而不是"密码错误"
 		{"邮箱不存在", "nobody@example.com", "whatever", "user_not_found"},
 		{"账号对应密码错误", "zhao", "wrong", "wrong_password"},
-		{"邮箱对应密码错误", "2096343460@qq.com", "wrong", "wrong_password"},
-		{"空登录名", "", "REDACTED", "user_not_found"},
+		{"邮箱对应密码错误", "zhao@example.com", "wrong", "wrong_password"},
+		{"空登录名", "", "fixture-pass", "user_not_found"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := user.Authenticate(ctx, tc.identifier, tc.password)

@@ -67,9 +67,17 @@ const (
 	// 两种结果都很难查。
 	DefaultSchema = "auth_hub"
 
-	// DefaultDSN 共享 PG（与 gs-ac 同一实例，不同 schema）。
-	// 生产应通过 IDP_DSN 覆盖，不要把连接串固化进镜像。
-	DefaultDSN = "pgsql:postgres:REDACTED@tcp(47.110.80.47:5432)/postgres?sslmode=disable&search_path=" + DefaultSchema
+	// DefaultDSN 本机开发用的默认连接串。
+	//
+	// ⚠️ 这里**故意不写真实地址和口令**。本仓库是公开的，任何写进源码的
+	// 连接串都等于公开的连接串 —— 它同时泄露主机、账号、口令三样东西，
+	// 而且换口令要改代码重新发版才能生效。所以默认值指向本机、口令用
+	// postgres 这种"一看就是占位"的值：它在本机 docker 里能跑，
+	// 在别处跑不了，恰好是正确的默认语义。
+	//
+	// 真实环境（含 CI）一律用 IDP_DSN 覆盖：CI 用它的 PG service container，
+	// 部署用 GitHub secret。部署脚本的 Preflight 会校验 IDP_DSN 非空。
+	DefaultDSN = "pgsql:postgres:postgres@tcp(127.0.0.1:5432)/postgres?sslmode=disable&search_path=" + DefaultSchema
 )
 
 // ── 邀请码 ──────────────────────────────────────────────────────────────────
