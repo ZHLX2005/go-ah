@@ -64,6 +64,8 @@ go-ah/
 │   ├── main.go
 │   ├── cmd/                       # login / whoami / logout
 │   └── internal/                  # PKCE、浏览器唤起、回环回调、加密存储、后台续期
+├── template-qr-client/            # 扫码登录的 Python 客户端（终端出二维码 + 模拟手机端）
+│   └── src/goah_qr/{api,render,roles,security,cli}.py
 ├── e2e/                           # Playwright 端到端测试
 ├── docs/screenshots/              # 端到端页面截图
 ├── .github/workflows/             # CI：测试 / 代码检查 / 多平台构建 + 发布
@@ -148,6 +150,7 @@ cd ../../ && go run main.go
 | `GET /.well-known/jwks.json` | RSA 公钥（id_token RS256 验签） |
 | `POST /api/login` `GET /api/me` `POST /api/logout` `GET/POST /api/consent` | auth-hub 前端页面配套 API |
 | `POST /api/register` | **自助注册（需邀请码）**：校验并核销邀请码 → 建档 → 直接下发会话，见 §5.3 |
+| `POST/GET /api/qr/sessions*` | **手机扫码登录**：建票 / 轮询 / 领取 / 作废 + 手机侧预览 / 扫码 / 批准 / 拒绝，见 §5.4 |
 
 ### 5.1 管理后台 API（需管理员会话）
 
@@ -276,6 +279,71 @@ WHERE id = ? AND used_count < max_uses
 - 登录页曾经有个「一键填充 test / test123456」的按钮，已删除：带真实口令构建一次，
   口令就会进公开可下载的 JS 产物。
 
+### 5.5 手机扫码登录
+
+设计文档（含状态机、威胁模型与验收记录）见 `docs/design/qr-login.md`。这里只说**它是什么**与**为什么这样做**。
+
+**扫码不是一种新的授权协议，而是"输密码"的替代动作。** PC 仍走完全不变的标准流程
+`/oauth2/auth → /login → /consent → 授权码 → PKCE 换 token`，只是 `/login` 多了"手机扫码"Tab。
+已登录的手机批准后，服务端**在 PC 自己发起的 `POST …/claim` 上**下发 `idp_session` 全局会话。
+
+带来四个结果：手机端**不必是 OIDC 客户端**（不需要注册 `redirect_uri`）、不新增 `grant_type`
+（`/oauth2/token` 与发现文档一字未改）、不需要 CORS（两端都只与 issuer 同源通信）、业务方零改动。
+
+| 端点 | 侧 | 鉴权 | 说明 |
+|---|---|---|---|
+| `POST /api/qr/sessions` | PC | 匿名 | 建票，响应 `Set-Cookie: qr_ctx`（`Path=/api/qr`） |
+| `GET /api/qr/sessions/{ticket}` | PC | qr_ctx | 轮询状态，**只读无副作用** |
+| `POST /api/qr/sessions/{ticket}/claim` | PC | qr_ctx | **唯一**下发 `idp_session` 的扫码端点 |
+| `POST /api/qr/sessions/{ticket}/cancel` | PC | qr_ctx | 作废并换一张新码 |
+| `GET /api/qr/sessions/{ticket}/preview` | 手机 | 身份 | 取"要被登录那台机器"的画像供核对 |
+| `POST /api/qr/sessions/{ticket}/scan` | 手机 | 身份 | 标记已扫码，驱动 PC 显示中间态 |
+| `POST /api/qr/sessions/{ticket}/confirm` | 手机 | 身份 | **唯一的授权动作**，无请求体 |
+| `POST /api/qr/sessions/{ticket}/refuse` | 手机 | 身份 | 「不是我操作」，作废票据 |
+
+手机侧身份**同时接受** `Authorization: Bearer <access_token>`（原生 App）与 `idp_session` Cookie
+（手机浏览器 H5 兜底页），两条路在 `controller/qr` 的 `resolveIdentity` 里合并。
+
+**`qr_ctx` 是整个功能的安全支点。** 建票时服务端给 PC 下一个 HttpOnly Cookie，库里只存它的
+SHA-256；领取时必须匹配。没有它，二维码就是"谁扫都能用"的凭据 —— 攻击者把 PC 上的码截图发给
+任一已登录的受害者，受害者一扫，攻击者的浏览器就拿到了受害者的会话。**票据的 256 bit 熵在
+这个场景里毫无用处，因为扫描者是自愿扫的。** 有了它，领取必须由当初那张码所在的浏览器发起。
+
+同理 **`return_to` / `client_id` 不入表、也不下发给手机**：票据只代表"某台 PC 想登录"，
+不代表登录完要授权哪个应用。一旦把授权请求绑进票据，攻击者就能构造一张
+"`/oauth2/auth?client_id=攻击者应用` 的二维码"让受害者替他完成授权。
+
+### 5.6 Python 扫码客户端（`template-qr-client`）
+
+没有 Flutter App、也没有手机可扫时，用它把整条链路跑通 —— 它在终端里**画出二维码**，
+并扮演手机端完成"预览 → 扫码 → 批准"。
+
+```bash
+cd template-qr-client && uv sync
+
+uv run goah-qr demo --issuer http://127.0.0.1:8080        # 一个进程演完两端
+uv run goah-qr security --issuer http://127.0.0.1:8080    # 只跑负向安全检查（7 项）
+uv run goah-qr pc                                           # 只当 PC：终端出码等人扫
+uv run goah-qr phone --url "<扫到的链接>" --refuse          # 只当手机：批准或拒绝
+```
+
+`demo` 的输出里能看到手机端界面收到的那份设备画像（`Chrome · Windows` / `本机 · 127.0.0.1` /
+`N 秒前`）—— 那正是真实用户点"确认登录"前唯一能核对的东西。
+
+三个设计决定值得说明：
+
+- **一个 `Device` = 一台设备 = 一个独立 Cookie 容器**，没有模块级 Session、没有默认 client。
+  若 PC 与手机共用容器，`qr_ctx` 防线即使被删掉演示照样全绿。
+- **`security` 子命令是这工具的主要价值**：happy path 跑通只证明功能可用，
+  一条也证明不了安全性，而扫码的风险全在"二维码被转发"上。7 项检查全是
+  "先制造一次攻击，再断言它失败"。
+- **二维码自己画**（`segno` 编码 + 自实现终端渲染），不依赖颜色也不走任何在线出图服务。
+  票据在图片 URL 里，交给第三方出图等于把它发出去。
+
+`--ascii` / `--blocks` 可强制渲染方式；Windows 旧 cmd 下若出现乱码，
+CLI 已把 stdout/stderr 重配为 UTF-8（二维码字符 `▀▄█` 在 cp936 下画不出来）。
+
+
 ## 6. 业务平台接口
 
 | 接口 | 说明 |
@@ -290,7 +358,7 @@ WHERE id = ? AND used_count < max_uses
 
 ## 7. 数据表
 
-**auth-hub（PostgreSQL schema `auth_hub`）**：`users`（含 `last_login_at`，**注册即登录也会写入**）、`oauth_clients`、`oauth_authorization_codes`（一次性，5分钟）、`oauth_refresh_tokens`（7天，登出全吊销）、`oauth_access_tokens`（10分钟，userinfo 鉴权）、`user_sessions`（8小时）、`signing_key_records`（id_token 的 RSA 私钥，**持久化**——否则每次重启换密钥，客户端缓存的 JWKS 会失配、已签发 token 全部验签失败）、`invitation_codes`（注册邀请码：`max_uses / used_count / expires_at / enabled`）、`invitation_code_usages`（使用明细，**删码后保留**）
+**auth-hub（PostgreSQL schema `auth_hub`）**：`users`（含 `last_login_at`，**注册即登录也会写入**）、`oauth_clients`、`oauth_authorization_codes`（一次性，5分钟）、`oauth_refresh_tokens`（7天，登出全吊销）、`oauth_access_tokens`（10分钟，userinfo 鉴权）、`user_sessions`（8小时）、`signing_key_records`（id_token 的 RSA 私钥，**持久化**——否则每次重启换密钥，客户端缓存的 JWKS 会失配、已签发 token 全部验签失败）、`invitation_codes`（注册邀请码：`max_uses / used_count / expires_at / enabled`）、`invitation_code_usages`（使用明细，**删码后保留**）、`qr_login_sessions`（扫码票据：`ticket / ctx_hash / status / user_id / pc_ua / pc_ip / pc_geo / *_at`，生命周期以分钟计但**保留 7 天供审计**，是全平台写入频率最高的表，由 `cmd.startJanitor` 每小时清理）
 
 > 新增列（如 `users.last_login_at`）不能只靠 `CREATE TABLE IF NOT EXISTS`：对**已存在**的表它什么都不做。
 > 所以 `schema.sql` 里新列一律写成 `ALTER TABLE … ADD COLUMN IF NOT EXISTS`，并有一条测试拿它当哨兵。
@@ -309,6 +377,13 @@ WHERE id = ? AND used_count < max_uses
 - **redirect_uri 白名单**：未注册的回调地址直接 400；**原生/CLI 客户端支持回环通配**（`http://127.0.0.1:*/callback`，RFC 8252）
 - **密码 argon2id** 哈希存储，常量时间比较
 - **注册需要邀请码**：没有开放注册入口，注册权限被收敛成"发码权限"（码只由管理员生成）；码为 `inv_` + 96 bit CSPRNG，不可猜；核销走 `UPDATE … WHERE used_count < max_uses` 条件更新，并发下只放行到配额上限；账号被占用/参数非法等失败**不消耗配额**（校验全在核销之前，且核销与建档在同一事务里回滚）
+- **扫码登录防转发**：票据与创建它的浏览器用 `qr_ctx` Cookie 绑死（库里只存 SHA-256），
+  领取必须由该浏览器发起；`return_to`/`client_id` 不进票据，避免受害者替攻击者完成授权；
+  确认页由**服务端**解析设备画像（不接受客户端自报），因为那是用户唯一能核对的东西；
+  无 `qr_ctx` 者轮询一律只看到 `pending`，不泄露真实进度
+- **状态迁移一律条件 UPDATE**：`pending→scanned→confirmed→consumed` 每步都靠
+  `UPDATE … WHERE <前置状态> AND expires_at > now()` 的 `affected` 行数定胜负，
+  并发下 scan/confirm/claim 各只放行一个（比现有 `ConsumeAuthorizationCode` 的读后写更严格）
 - **统一登出**：全局会话 + 业务会话 + 全部 refresh_token 三清
 - **Token 加密持久化（Task4）**（详见 §9）
 - **后台自动续期（Task4）**（详见 §9）
@@ -379,6 +454,9 @@ WHERE id = ? AND used_count < max_uses
 | 13 | 管理员生成邀请码 → 受邀者凭码自助注册 → **注册即登录**并完成 OIDC 授权进入业务平台 | ✅ |
 | 14 | 邀请码配额递减、使用明细可查（谁/何时/哪个账号）；过期、停用、用完、账号占用均被明确拒绝 | ✅ |
 | 15 | 一次性邀请码并发核销只成功一次；被拒的那次不消耗配额（事务整体回滚） | ✅ |
+| 16 | 手机扫码登录：PC 出码 → 手机批准 → PC 领到会话并进入管理台，**全程不输密码** | ✅ |
+| 17 | 扫码防转发：无 `qr_ctx` / 用自己的 `qr_ctx` 领别人的票 / 匿名 confirm / 未批准就 claim / 重复领取 / 拒绝后领取，6 类攻击全部被拒 | ✅ |
+| 18 | 并发 scan·confirm·claim 各只放行一次（真 PG + 10 协程） | ✅ |
 
 ### 10.1 Go 单元测试
 
@@ -421,7 +499,8 @@ go test -coverprofile=coverage.out ./... && go tool cover -func=coverage.out | t
 
 ```bash
 cd e2e && npm install
-npm test                     # 27 个用例，串行约 2 分钟
+npm test                     # 30 个用例，串行约 2 分钟
+npm run test:qr              # 只跑扫码登录（只需要认证中心，不需要业务平台）
 ```
 
 前置条件：两个服务已启动（见 §3）。离线环境可用 `CHROMIUM_PATH` 复用已缓存的浏览器。
@@ -432,8 +511,18 @@ npm test                     # 27 个用例，串行约 2 分钟
 | `admin-panel.spec.ts` | 10 | 未登录跳转、管理员鉴权、用户/客户端/令牌三面板、客户端 CRUD、内置客户端保护、secret 不下发 |
 | `invite-register.spec.ts` | 3 | 生成码 → 凭码注册 → **注册即登录并走完 OIDC**进业务平台、配额递减与使用明细、停用/启用/删除立即生效、用完与账号占用有明确提示且**不消耗配额** |
 | `token-revoke.spec.ts` | 8 | TTL 与加密标记、手动刷新、管理员吊销、`invalid_grant` 三处（刷新/授权码/未知令牌）、userinfo 鉴权、安全状态接口 |
+| `qr-login.spec.ts` | 3 | 扫码登录**双 context 真实浏览器**：PC 出码→手机批准→PC 领到会话进入管理台（全程不输密码）、手机端拒绝后 PC 拿不到会话、二维码被转发给第三台设备时既看不到进度也领不走 |
 
-**当前结果：`27 passed`**。详细设计与排错见 [`e2e/README.md`](e2e/README.md)。
+**当前结果**：`qr-login.spec.ts` 为本次新增，**3 passed**（截图落在 `e2e/screenshots/qr-*.png`）；
+其余 27 个用例本轮**未重跑** —— 它们需要 8081 上的业务平台，而本次验证只起了认证中心。
+改动过的 `SetSessionCookie`（补 `SameSite=Lax`）与新增表 DDL 都向后兼容，
+但"应该没问题"不等于"验过没问题"，跑全量前请勿据此声称 30 passed。
+
+扫码这套用例**必须**用两个 context：整个功能的安全模型就是"PC 的 `qr_ctx` 与手机的
+`idp_session` 分属两台设备"。若两端共用一个 context，两者会同源共存，
+那么 `qr_ctx` 防线即使被删掉用例依然全绿 —— 在这里，一个不会失败的测试比没有测试更糟。
+
+详细设计与排错见 [`e2e/README.md`](e2e/README.md)。
 
 ## 11. 案例代码：三步接入 go-ah 单点登录
 
