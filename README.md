@@ -265,6 +265,14 @@ WHERE id = ? AND used_count < max_uses
   改成新邮箱即可：旧账号会被第 3 步降级，新账号被第 2 步提权（口令沿用配置值）。
 - **默认值不是生产账号**。代码里的默认是 `test / test123456`（公开仓库 = 公开口令），
   `deploy.yml` 的 Preflight 检测到默认值会直接让部署失败。
+- ⚠️ **降级只挡权限、挡不住登录 —— 而且种子不会替你收拾历史数据。**
+  第 2 步对已存在的账号**只补 `is_admin`、不覆盖口令**，第 3 步也只是把 `is_admin` 置回 `false`：
+  一个早先用默认口令建过档的账号，换掉 `IDP_ADMIN_*` 重启之后仍然**可以用旧口令登录**，
+  只是拿不到管理接口（`/api/admin/me` 返回 403）。排查时这两个信号要分清 ——
+  `not_authenticated` 是没认出身份，`forbidden` 才是身份认出来了但权限不够。
+  想让旧账号彻底消失，得**显式删掉它那一行**（连同 `user_sessions` /
+  `o_auth_refresh_tokens` / `o_auth_access_tokens` / `o_auth_authorization_codes`
+  里挂在它名下的记录），种子不会做这件事。
 - 登录页曾经有个「一键填充 test / test123456」的按钮，已删除：带真实口令构建一次，
   口令就会进公开可下载的 JS 产物。
 
