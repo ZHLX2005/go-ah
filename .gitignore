@@ -16,6 +16,15 @@ dist/
 /template-business-server/go-ah-template
 /template-oidc-cli/oidc-cli
 
+# ── Python（template-qr-client）──
+# .venv 是 uv 在本地按当前机器生成的虚拟环境（含 Windows 专属的可执行文件与
+# 绝对路径引用），提交上去在别的机器上根本不可用；重建它只要一句 `uv sync`，
+# 依赖锁定由 uv.lock 负责 —— 那个才是要提交的。
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
 # ── Playwright ──
 playwright-report/
 test-results/
