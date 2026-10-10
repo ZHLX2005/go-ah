@@ -5,7 +5,6 @@ import {
   TEST_USER,
   loginWithPKCE,
   fetchBizProfile,
-  fetchIDPMe,
   assertServicesUp,
 } from './helpers'
 
@@ -96,9 +95,11 @@ test.describe('OIDC PKCE 授权码流程', () => {
 
     expect(page.url()).toMatch(/127\.0\.0\.1:8081\/(\?.*)?$/)
 
-    // 业务侧确实建了会话，而不是停在某个中间页
-    const me = await fetchIDPMe(page)
-    expect(me.status).toBe(200)
+    // 业务侧确实建了会话，而不是停在某个中间页。
+    // 这里必须用业务站的接口：页面此刻在 8081 上，相对路径 /api/me 会打到业务后端，
+    // 而它没有这个路由 —— 取到 404 会把「已登录」误判成失败。
+    const profile = await fetchBizProfile(page)
+    expect(profile.status).toBe(200)
   })
 
   test('完整 PKCE 登录流程：登录 -> 授权 -> 回调 -> 建立业务会话', async ({ page }) => {

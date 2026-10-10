@@ -55,7 +55,7 @@ npm run report           # 查看 HTML 报告
 |---|---|---|
 | 1 | 未登录访问业务首页自动跳转 IDP | 从 `return_to` 还原授权 URL；带 `code_challenge`(43位)、`code_challenge_method=S256`、`state`、`nonce`；**URL 中无 `client_secret`** |
 | 2 | 错误密码登录 | 停留在 `/login` 并显示错误提示 |
-| 3 | 账号栏填邮箱登录 | 用 `TEST_USER.email` 走完整 PKCE 流程进业务首页，`/api/me` 200（管理员身份由邮箱配置，登录不能只认账号名） |
+| 3 | 账号栏填邮箱登录 | 用 `TEST_USER.email` 走完整 PKCE 流程进业务首页，业务 `/api/profile` 200（管理员身份由邮箱配置，登录不能只认账号名） |
 | 4 | 完整 PKCE 登录 | 登录→授权→回调→`/api/profile` 200；`has_id_token`/`has_refresh_token` 为 true；**页面无 JS 错误** |
 | 5 | 登录后刷新页面 | 会话保持，不被踢回 IDP |
 | 6 | 未登录访问受保护接口 | `/api/profile` 401；`/api/session` 返回 `data: null` |

@@ -209,6 +209,13 @@ jobs:
         timeout: 15m
         command_timeout: 20m
         script: |
+          # ⚠️ 下面整段是 bash -c 的单引号参数（本行开、文件末尾那行闭）。
+          # 因此脚本体内**不能出现任何单引号**：出现一个就把参数提前闭合，
+          # 剩余部分交给外层 shell 解析，症状是前面的步骤正常输出、从断点之后
+          # 全部丢失，最后报一句与真正原因无关的
+          # 「unexpected EOF while looking for matching )」。
+          # 需要引号时一律用双引号；${{ }} 里的单引号在 Actions 阶段就被替换掉了，
+          # 不影响这一点。
           bash -c '
           set -e
 
@@ -398,25 +405,31 @@ jobs:
           # 在改过密码的库上必然 401 —— 那是正常的，不该让部署失败。
           # user_not_found 才是真问题：说明 IDP_ADMIN_EMAIL 没被接上，
           # 或者账号压根没建出来。
-          LOGIN_BODY=$(curl -s --max-time 10 -X POST "${IDP_ISSUER}/api/login" \
-            -H 'Content-Type: application/json' \
-            -d "{\"username\":\"${IDP_ADMIN_EMAIL}\",\"password\":\"${IDP_ADMIN_PASSWORD}\"}" 2>/dev/null || true)
-          case "$LOGIN_BODY" in
-            *'"code":0'*)
-              echo "  ${IDP_ADMIN_EMAIL} 登录成功 ✓"
-              ;;
-            *user_not_found*)
-              echo "ERROR: 管理员 ${IDP_ADMIN_EMAIL} 不存在，登录接口返回：$LOGIN_BODY"
-              echo "  IDP_ADMIN_EMAIL 多半没传进容器（检查 docker run 的 -e），"
-              echo "  或者启动日志里 seed 那一步失败了。"
-              docker logs $BACKEND_NAME --tail 60
-              exit 1
-              ;;
-            *)
-              echo "  ${IDP_ADMIN_EMAIL} 账号已存在（口令与配置不一致，或库中另有口令），响应：$LOGIN_BODY"
-              echo "  这是允许的状态：种子只在新建账号时写入口令。"
-              ;;
-          esac
+          #
+          # ⚠️ 本段整体是 bash -c 的单引号参数（第 219 行开、441 行闭），
+          # 所以脚本体里**一个单引号都不能出现**：出现一个就把参数提前闭合，
+          # 剩下半截交给外层 shell 解析，报的是毫无线索的
+          # 「unexpected EOF while looking for matching )」——
+          # 已实测踩过，前面的步骤照样跑完，只有这里之后的部分全部丢失。
+          # 因此这里一律用双引号，并且用 curl 的 http_code 判成功，
+          # 而不是 case 匹配 `"code":0`（那需要在内层再嵌一层引号）。
+          LOGIN_HTTP=$(curl -s -o /tmp/admin_login.json -w "%{http_code}" --max-time 10 \
+            -X POST "${IDP_ISSUER}/api/login" \
+            -H "Content-Type: application/json" \
+            -d "{\"username\":\"${IDP_ADMIN_EMAIL}\",\"password\":\"${IDP_ADMIN_PASSWORD}\"}" \
+            2>/dev/null || true)
+          if [ "$LOGIN_HTTP" = "200" ]; then
+            echo "  ${IDP_ADMIN_EMAIL} 登录成功 ✓"
+          elif grep -q user_not_found /tmp/admin_login.json 2>/dev/null; then
+            echo "ERROR: 管理员 ${IDP_ADMIN_EMAIL} 不存在，登录接口返回：$(cat /tmp/admin_login.json)"
+            echo "  IDP_ADMIN_EMAIL 多半没传进容器（检查 docker run 的 -e），"
+            echo "  或者启动日志里 seed 那一步失败了。"
+            docker logs $BACKEND_NAME --tail 60
+            exit 1
+          else
+            echo "  ${IDP_ADMIN_EMAIL} 账号已存在，但口令与配置不一致（HTTP $LOGIN_HTTP）"
+            echo "  这是允许的状态：种子只在新建账号时写入口令，不覆盖已有口令。"
+          fi
 
           echo "Step 12: 日志摘要…"
           docker logs $BACKEND_NAME 2>&1 | grep -iE "PostgreSQL|schema|签名密钥|已注册客户端|核心管理员|降级" | tail -8 || true
