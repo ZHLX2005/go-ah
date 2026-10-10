@@ -210,3 +210,23 @@ func (invitationCodeUsageDao) Table() string { return consts.TableInvitationCode
 func (invitationCodeUsageDao) Columns() internal.InvitationCodeUsageColumns {
 	return internal.InvitationCodeUsageColumnsOf()
 }
+
+// ── qr_login_sessions ───────────────────────────────────────────────────────
+
+type qrLoginSessionDao struct{}
+
+// QRLoginSession 扫码登录票据表
+var QRLoginSession = qrLoginSessionDao{}
+
+// Ctx 返回带上下文的查询模型
+func (qrLoginSessionDao) Ctx(ctx context.Context) *gdb.Model {
+	return db.Instance().Model(consts.TableQRLoginSession).Safe().Ctx(ctx)
+}
+
+// Table 表名
+func (qrLoginSessionDao) Table() string { return consts.TableQRLoginSession }
+
+// Columns 列名集合
+func (qrLoginSessionDao) Columns() internal.QRLoginSessionColumns {
+	return internal.QRLoginSessionColumnsOf()
+}

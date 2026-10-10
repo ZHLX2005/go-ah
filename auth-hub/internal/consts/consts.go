@@ -26,6 +26,12 @@ const (
 	// 因此用复数蛇形（与 users 一致），不必像 o_auth_* 那样迁就 GORM 的命名。
 	TableInvitationCode      = "invitation_codes"
 	TableInvitationCodeUsage = "invitation_code_usages"
+
+	// TableQRLoginSession 扫码登录票据表（同上，本项目新表，用复数蛇形）。
+	//
+	// 它是全平台写入频率最高的表：每次登录尝试一行，过期没领走的也是一行。
+	// 所以它的清理是硬性要求，见 cmd.startJanitor。
+	TableQRLoginSession = "qr_login_sessions"
 )
 
 // ── Cookie / 会话 ───────────────────────────────────────────────────────────
@@ -56,6 +62,20 @@ const (
 	SessionTTL = 8 * time.Hour
 	// IDTokenTTL id_token 有效期 1 小时
 	IDTokenTTL = 1 * time.Hour
+
+	// QRTicketTTL 扫码票据有效期 2 分钟。
+	//
+	// 比授权码的 5 分钟紧得多，因为这张票据的语义是"某台浏览器正在等着登录"：
+	// 它一旦过期就该彻底作废，而不是留着一个可能被人翻出来领取会话的入口。
+	// 2 分钟是"掏出手机 → 解锁 → 打开 App → 看清设备信息 → 点确认"的经验上限；
+	// 压到 60 秒会让相当比例的正常用户还没确认完就看到二维码过期。
+	QRTicketTTL = 2 * time.Minute
+
+	// QRRetainAfterExpiry 过期票据在库里再留 7 天才清。
+	//
+	// 清理不是为了省空间，是为了让"这次扫码是谁批的"事后能查：
+	// 票据表是扫码登录唯一的审计轨迹，随过随删等于把线索一起烧掉。
+	QRRetainAfterExpiry = 7 * 24 * time.Hour
 )
 
 // ── 数据库 ──────────────────────────────────────────────────────────────────
@@ -107,6 +127,43 @@ const (
 	MaxInvitationUses = 1000
 	// MaxInvitationValidDays 单张邀请码允许配置的最长有效期（天）
 	MaxInvitationValidDays = 3650
+)
+
+// ── 扫码登录 ────────────────────────────────────────────────────────────────
+//
+// 扫码登录的整套设计见 docs/design/qr-login.md。这里只放"必须跨包共用"的量：
+// Cookie 名、票据格式、给前端的节奏参数。状态取值在 entity 包里定义
+// （它跟着读出来的行走），控制器与前端都从那一处取。
+const (
+	// QRCtxCookieName 把票据与"发起创建它的那台浏览器"绑死的 Cookie。
+	//
+	// 这是整个扫码功能的安全支点。没有它，二维码就是一个"谁扫都能用"的凭据：
+	// 攻击者把 PC 上的二维码截图发给任意一个已登录的受害者，受害者一扫，
+	// 攻击者的浏览器就拿到了受害者的会话 —— 票据的熵在这个场景里一点用没有，
+	// 因为扫描者是自愿扫的。有了它，领取会话必须由当初那张二维码所在的
+	// 浏览器亲自发起，转发攻击在协议层就不成立。
+	QRCtxCookieName = "qr_ctx"
+	// QRCtxCookiePath 收敛到 /api/qr：这个 Cookie 只在轮询与领取时有用，
+	// 没必要让它出现在全站每一个请求上。
+	QRCtxCookiePath = "/api/qr"
+	// QRCtxBytes qr_ctx 随机部分的字节数（128 bit，只需不可猜，不落库明文）
+	QRCtxBytes = 16
+
+	// QRTicketPrefix 票据前缀，同邀请码：让日志里一眼认得出这是什么
+	QRTicketPrefix = "qrt_"
+	// QRTicketBytes 票据随机部分的字节数。
+	//
+	// 32 字节 = 256 bit，比邀请码的 96 bit 宽得多，因为它比邀请码更"廉价"
+	// 却更危险：邀请码泄露顶多多放一个人注册进来，票据一旦被猜中并且攻击者
+	// 恰好能触发领取，那就是别人的账号。二维码还会被拍照、截图、转发，
+	// 暴露面比任何 token 都大，所以这里不给它省那一点长度。
+	QRTicketBytes = 32
+
+	// QRPollIntervalMS 建议前端采用的轮询间隔。
+	//
+	// 由服务端下发而不是前端硬编码：将来换 SSE 或调节奏时，只要改这一处，
+	// 老版本前端也会跟着变，不必等用户刷新到新版。
+	QRPollIntervalMS = 1500
 )
 
 // ── 注册校验 ────────────────────────────────────────────────────────────────

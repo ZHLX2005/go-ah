@@ -21,9 +21,11 @@ import (
 	adminapi "github.com/ZHLX2005/go-ah/auth-hub/api/admin/v1"
 	authapi "github.com/ZHLX2005/go-ah/auth-hub/api/auth/v1"
 	oidcapi "github.com/ZHLX2005/go-ah/auth-hub/api/oidc/v1"
+	qrapi "github.com/ZHLX2005/go-ah/auth-hub/api/qr/v1"
 	adminctrl "github.com/ZHLX2005/go-ah/auth-hub/internal/controller/admin"
 	authctrl "github.com/ZHLX2005/go-ah/auth-hub/internal/controller/auth"
 	oidcctrl "github.com/ZHLX2005/go-ah/auth-hub/internal/controller/oidc"
+	qrctrl "github.com/ZHLX2005/go-ah/auth-hub/internal/controller/qr"
 	"github.com/ZHLX2005/go-ah/auth-hub/internal/controller/response"
 	"github.com/ZHLX2005/go-ah/auth-hub/internal/middleware"
 )
@@ -34,6 +36,7 @@ func Register(ctx context.Context, s *ghttp.Server, webDist string) {
 	oidcC := oidcctrl.New()
 	authC := authctrl.New()
 	adminC := adminctrl.New()
+	qrC := qrctrl.New()
 
 	// ── 公开端点：OIDC 协议 + 认证入口 + 授权确认页数据 ──────────────────────
 	s.Group("/", func(group *ghttp.RouterGroup) {
@@ -62,6 +65,30 @@ func Register(ctx context.Context, s *ghttp.Server, webDist string) {
 		// 授权确认页
 		group.GET("/api/consent", call[oidcapi.ConsentInfoReq](oidcC.ConsentInfo))
 		group.POST("/api/consent", call[oidcapi.ConsentReq](oidcC.Consent))
+
+		// ── 扫码登录（设计见 docs/design/qr-login.md）──────────────────────────
+		//
+		// 整组放在公开组里，但"公开"对两类端点的含义完全不同，别混着看：
+		//
+		//   PC 侧（sessions / poll / claim / cancel）匿名可调，授权靠 qr_ctx
+		//   Cookie —— 谁创建了这张票据，谁才配领走它换来的会话。
+		//
+		//   手机侧（preview / scan / confirm / refuse）必须已有身份，
+		//   由控制器自查（Cookie 会话或 Bearer access_token 两条路都认）。
+		//   不挂 RequireAdmin：扫码确认是普通账号在做的事，挂上等于
+		//   把功能只对管理员开放 —— 同 /api/register 不进管理分组的理由。
+		//
+		// 中间件挂在分组上，所以这四条手机侧端点不能和 PC 侧四条并到同一个
+		// 子分组里（那样要么全都得登录、要么全都不校验）。逐个注册，
+		// 代价是"新增端点忘了想鉴权"的风险回到人身上；这里用注释把它标出来。
+		group.POST("/api/qr/sessions", call[qrapi.CreateReq](qrC.Create))
+		group.GET("/api/qr/sessions/{ticket}", call[qrapi.PollReq](qrC.Poll))
+		group.POST("/api/qr/sessions/{ticket}/claim", call[qrapi.ClaimReq](qrC.Claim))
+		group.POST("/api/qr/sessions/{ticket}/cancel", call[qrapi.CancelReq](qrC.Cancel))
+		group.GET("/api/qr/sessions/{ticket}/preview", call[qrapi.PreviewReq](qrC.Preview))
+		group.POST("/api/qr/sessions/{ticket}/scan", call[qrapi.ScanReq](qrC.Scan))
+		group.POST("/api/qr/sessions/{ticket}/confirm", call[qrapi.ConfirmReq](qrC.Confirm))
+		group.POST("/api/qr/sessions/{ticket}/refuse", call[qrapi.RefuseReq](qrC.Refuse))
 
 		// OIDC 协议端点
 		group.GET("/oauth2/auth", call[oidcapi.AuthorizeReq](oidcC.Authorize))

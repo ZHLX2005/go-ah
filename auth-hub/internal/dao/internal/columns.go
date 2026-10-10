@@ -192,3 +192,34 @@ func InvitationCodeUsageColumnsOf() InvitationCodeUsageColumns {
 		Username: "username", Email: "email", UsedAt: "used_at",
 	}
 }
+
+// QRLoginSessionColumns qr_login_sessions 表列名
+type QRLoginSessionColumns struct {
+	Id          string
+	Ticket      string
+	CtxHash     string
+	Status      string
+	UserID      string
+	PcUA        string
+	PcIP        string
+	PcGeo       string
+	ScanUA      string
+	ConfirmUA   string
+	ExpiresAt   string
+	ScannedAt   string
+	ConfirmedAt string
+	ConsumedAt  string
+	CreatedAt   string
+	UpdatedAt   string
+}
+
+// QRLoginSessionColumnsOf 返回 qr_login_sessions 表的列名集合
+func QRLoginSessionColumnsOf() QRLoginSessionColumns {
+	return QRLoginSessionColumns{
+		Id: "id", Ticket: "ticket", CtxHash: "ctx_hash", Status: "status",
+		UserID: "user_id", PcUA: "pc_ua", PcIP: "pc_ip", PcGeo: "pc_geo",
+		ScanUA: "scan_ua", ConfirmUA: "confirm_ua", ExpiresAt: "expires_at",
+		ScannedAt: "scanned_at", ConfirmedAt: "confirmed_at",
+		ConsumedAt: "consumed_at", CreatedAt: "created_at", UpdatedAt: "updated_at",
+	}
+}

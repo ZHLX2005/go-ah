@@ -168,3 +168,46 @@ CREATE TABLE IF NOT EXISTS "invitation_code_usages" (
 CREATE INDEX IF NOT EXISTS "idx_invitation_code_usages_code_id" ON "invitation_code_usages" ("code_id");
 CREATE INDEX IF NOT EXISTS "idx_invitation_code_usages_user_id" ON "invitation_code_usages" ("user_id");
 CREATE INDEX IF NOT EXISTS "idx_invitation_code_usages_used_at" ON "invitation_code_usages" ("used_at");
+
+-- 扫码登录的票据状态机（设计见 docs/design/qr-login.md）。
+--
+-- 一行 = 一张二维码的一生：PC 创建它（pending）→ 手机扫（scanned）→
+-- 手机批准（confirmed）→ PC 领走会话（consumed）。状态迁移一律靠条件
+-- UPDATE 的 affected 行数定胜负，不靠"先读出来判断再写回"，见 logic/qr。
+--
+-- 关于 ctx_hash：库里只存 qr_ctx Cookie 的 SHA-256，不存原文。
+-- 这一列存在的唯一目的是"把票据绑回发起它的那台浏览器"，验证时把请求带来的
+-- Cookie 哈希一下比对即可。存原文的话，这张表一旦外泄，攻击者手里就同时有了
+-- 票据和领取凭据 —— 那等于把两道锁的钥匙挂在同一个钩子上。
+--
+-- 关于 pc_* 三列：它们是**给手机屏幕看的**，不是审计字段。用户判断
+-- "这张二维码是不是我电脑上弹出来的"，靠的就是这三列渲染出的
+-- "Chrome / Windows / 上海 / 刚刚"。所以采集必须在创建时做（那时才拿得到
+-- PC 自己的 UA 与 IP），且必须可信 —— 由服务端从请求头解析，绝不采信客户端自报。
+CREATE TABLE IF NOT EXISTS "qr_login_sessions" (
+    "id"           BIGSERIAL    PRIMARY KEY,
+    "ticket"       VARCHAR(64)  NOT NULL,
+    "ctx_hash"     VARCHAR(64)  NOT NULL,
+    -- pending / scanned / confirmed / consumed / cancelled / expired
+    "status"       VARCHAR(16)  NOT NULL DEFAULT 'pending',
+    -- 谁批准了这次登录。confirm 之前是 NULL
+    "user_id"      BIGINT,
+    "pc_ua"        VARCHAR(255),
+    "pc_ip"        VARCHAR(64),
+    "pc_geo"       VARCHAR(128),
+    -- 哪个设备扫的、哪个设备点的确认（与 pc_* 相对：那是被登录端，这是批准端）
+    "scan_ua"      VARCHAR(255),
+    "confirm_ua"   VARCHAR(255),
+    "expires_at"   TIMESTAMPTZ  NOT NULL,
+    "scanned_at"   TIMESTAMPTZ,
+    "confirmed_at" TIMESTAMPTZ,
+    "consumed_at"  TIMESTAMPTZ,
+    "created_at"   TIMESTAMPTZ,
+    "updated_at"   TIMESTAMPTZ
+);
+-- ticket 唯一：它同时是查询条件与防重放的锚点
+CREATE UNIQUE INDEX IF NOT EXISTS "idx_qr_login_sessions_ticket" ON "qr_login_sessions" ("ticket");
+-- 清理任务按 expires_at 扫，没有这个索引就是全表扫
+CREATE INDEX IF NOT EXISTS "idx_qr_login_sessions_expires_at" ON "qr_login_sessions" ("expires_at");
+-- 管理端"这个账号被哪些设备扫码登录过"按 user_id 查
+CREATE INDEX IF NOT EXISTS "idx_qr_login_sessions_user_id" ON "qr_login_sessions" ("user_id");

@@ -79,10 +79,55 @@ func SetSessionCookie(r *ghttp.Request, value string, maxAge int) {
 		MaxAge: maxAge,
 		// 会话票据绝不暴露给脚本：否则一段 XSS 就能把登录态带走
 		HttpOnly: true,
+		// 显式写 Lax，而不是留着不写给浏览器去默认。
+		//
+		// 二者今天的**行为**是一样的（浏览器对无 SameSite 属性的 Cookie 按 Lax
+		// 处置），但"靠默认"和"写下来"不是一回事：默认值属于浏览器的策略，
+		// 会随版本变（Safari 一度对跨站 Cookie 直接默认拒绝），而写下来的
+		// 契约不会。本服务多处写操作（登录、登出、授权、扫码领取、扫码确认）
+		// 的 CSRF 免疫全都建立在这一点上，不该建在一个没人声明过的默认值上。
+		//
+		// Secure 仍然没加：当前部署是 HTTP（README §14 把 HTTPS 列为非目标），
+		// 加上它本地开发立刻登录不上。等 HTTPS 落地时随配置一起开。
+		SameSite: http.SameSiteLaxMode,
 	})
 }
 
 // ClearSessionCookie 清除全局会话 Cookie（MaxAge 为负 → 浏览器立即删除）
 func ClearSessionCookie(r *ghttp.Request) {
 	SetSessionCookie(r, "", -1)
+}
+
+// SetQRCtxCookie 下发扫码票据的上下文 Cookie。
+//
+// 三个属性都和"它会被人拿去尝试转发"直接相关，一个都不能省：
+//   - HttpOnly：这是领取凭据，脚本能读到就等于把防转发机制关掉；
+//   - Path 收敛到 /api/qr：它只在轮询与领取时有用，没必要跟着
+//     用户访问的每个页面一起发出去；
+//   - 短 MaxAge：与票据同寿，票据没了这把钥匙也该没了。
+//
+// 不设置 SameSite=Lax 以外的更强值：PC 前端就在 issuer 同源上，
+// Lax 足够，而 Strict 会让"从外链点进登录页"这种正常路径丢 Cookie。
+func SetQRCtxCookie(r *ghttp.Request, value string, maxAge int) {
+	r.Cookie.SetHttpCookie(&http.Cookie{
+		Name:     consts.QRCtxCookieName,
+		Value:    value,
+		Path:     consts.QRCtxCookiePath,
+		MaxAge:   maxAge,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+// NoStore 声明响应不可缓存。
+//
+// 扫码轮询必须带这个：状态查询一旦被中间代理或浏览器缓存住，
+// PC 就会反复看到同一个旧状态 —— 症状是"手机明明确认了，电脑上却不动"，
+// 而这个症状从代码上看完全正常，只能靠抓包才查得出来。
+// 挂在这类"状态在库里、答案在响应里"的端点上，比在网关层统一配要可靠：
+// 谁新加一个轮询端点，忘了调这一句就会踩坑，而坑长在端点自己身上。
+func NoStore(r *ghttp.Request) {
+	h := r.Response.Header()
+	h.Set("Cache-Control", "no-store")
+	h.Set("Pragma", "no-cache")
 }

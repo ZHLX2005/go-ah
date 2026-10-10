@@ -189,3 +189,70 @@ type InvitationCodeUsage struct {
 	Email    string    `json:"email"    description:"注册时填写的邮箱"`
 	UsedAt   time.Time `json:"used_at"  description:"核销时间"`
 }
+
+// QRLoginSession 扫码登录票据：一行 = 一张二维码的一生。
+//
+// 状态迁移由 logic/qr 用条件 UPDATE 驱动，本结构只负责把某一刻的行读出来。
+// CtxHash 标 json:"-"：它是"能否领取会话"的凭据摘要，虽然已经是 SHA-256，
+// 但没有任何一个响应需要它 —— 一旦哪天有人顺手把这个实体整个序列化回去，
+// 摘要就成了一张可以离线爆破的表。默认不外发比"记得别外发"可靠。
+type QRLoginSession struct {
+	Id          int64      `json:"id"           description:"主键"`
+	Ticket      string     `json:"ticket"       description:"票据"`
+	CtxHash     string     `json:"-"            description:"qr_ctx Cookie 的 SHA-256（领取凭据摘要，绝不外发）"`
+	Status      string     `json:"status"       description:"状态"`
+	UserID      int64      `json:"user_id"      description:"批准者（confirm 之前为 0）"`
+	PcUA        string     `json:"pc_ua"        description:"发起登录那台浏览器的 UA 摘要"`
+	PcIP        string     `json:"pc_ip"        description:"发起登录那台浏览器的 IP"`
+	PcGeo       string     `json:"pc_geo"       description:"IP 归属地（best-effort）"`
+	ScanUA      string     `json:"scan_ua"      description:"扫码设备 UA"`
+	ConfirmUA   string     `json:"confirm_ua"   description:"确认设备 UA"`
+	ExpiresAt   time.Time  `json:"expires_at"   description:"过期时间"`
+	ScannedAt   *time.Time `json:"scanned_at"   description:"被扫码时间"`
+	ConfirmedAt *time.Time `json:"confirmed_at" description:"被批准时间"`
+	ConsumedAt  *time.Time `json:"consumed_at"  description:"被 PC 领取时间"`
+	CreatedAt   time.Time  `json:"created_at"   description:"创建时间"`
+	UpdatedAt   time.Time  `json:"updated_at"   description:"更新时间"`
+}
+
+// 扫码票据状态。
+//
+// 取值以字符串入库而不是小整数：这张表是人要先看的（排障时对着数据库读
+// "confirmed" 比读 "3" 快），而且它不像 users 那样有历史包袱。
+const (
+	// QRStatusPending 已创建，等待扫码
+	QRStatusPending = "pending"
+	// QRStatusScanned 已被手机扫到，等待用户在手机上确认
+	// （PC 据此把二维码灰掉：这个中间态是防"扫了却没批准"被误判成失败）
+	QRStatusScanned = "scanned"
+	// QRStatusConfirmed 手机已批准，等待 PC 来领会话
+	QRStatusConfirmed = "confirmed"
+	// QRStatusConsumed PC 已领走会话，票据彻底作废（终态）
+	QRStatusConsumed = "consumed"
+	// QRStatusCancelled 被 PC 主动换码作废，或被手机点"不是我操作的"拒绝
+	QRStatusCancelled = "cancelled"
+	// QRStatusExpired 到期未走完。库里其实不写这个值 —— 过期是靠 expires_at
+	// 判定的，它只作为**对外**状态出现，免得前端还要自己比较时间。
+	QRStatusExpired = "expired"
+)
+
+// IsTerminal 是否为终态（终态票据不可再发生任何迁移）
+func (q *QRLoginSession) IsTerminal() bool {
+	switch q.Status {
+	case QRStatusConsumed, QRStatusCancelled:
+		return true
+	}
+	return false
+}
+
+// EffectiveStatus 对外呈现的状态：把"库里没写但已经过期"折叠成 expired。
+//
+// 必须在**读取侧**做这件事而不是让过期任务去写库：定时清理是尽力而为的，
+// 服务重启期间没人跑批，若状态只由写侧决定，就会出现"expires_at 早就过了、
+// status 还是 pending"的行 —— 前端会一直转圈，而排查的人以为是轮询坏了。
+func (q *QRLoginSession) EffectiveStatus(now time.Time) string {
+	if !now.Before(q.ExpiresAt) && !q.IsTerminal() {
+		return QRStatusExpired
+	}
+	return q.Status
+}

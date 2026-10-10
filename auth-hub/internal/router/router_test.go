@@ -79,6 +79,43 @@ var routeInventory = []endpoint{
 	{"PUT", "/api/admin/invites/1"},
 	{"DELETE", "/api/admin/invites/1"},
 	{"GET", "/api/admin/invites/1/usages"},
+
+	// 扫码登录的 8 条端点**不在**这份清单里，不是漏了：本清单服务的前提是
+	// "不碰数据库也能跑"（见包注释），而 /api/qr/* 每一条都要读写 qr_login_sessions，
+	// 在这个环境里会撞上 db.Instance() 的"未 Init 即 panic"。
+	// 它们的注册由 TestQRRoutesRegistered 用路由表自省来验（零请求、零库），
+	// 手机侧的鉴权由 TestMobileQREndpointsRejectAnonymous 验（该路径提前返回，不碰库）。
+}
+
+// qrRoutes 扫码登录端点在 gf 路由表里的样子：{METHOD, PATH}。
+//
+// 与 routeInventory 分成两种断言，是因为它们能承受的验证深度不同 ——
+// 一个只需要"挂上了"，另一个还要"挂对了地方"。
+var qrRoutes = []string{
+	"POST:/api/qr/sessions",
+	"GET:/api/qr/sessions/{ticket}",
+	"POST:/api/qr/sessions/{ticket}/claim",
+	"POST:/api/qr/sessions/{ticket}/cancel",
+	"GET:/api/qr/sessions/{ticket}/preview",
+	"POST:/api/qr/sessions/{ticket}/scan",
+	"POST:/api/qr/sessions/{ticket}/confirm",
+	"POST:/api/qr/sessions/{ticket}/refuse",
+}
+
+// mobileQREndpoints 手机侧端点：四条全部要求已有身份。
+//
+// 单独列一份而不是并入 routeInventory，是因为对它们断言的东西不同：
+// 其余端点只要求"挂上了"（非 404），这里要求"匿名必须被挡在 401"。
+//
+// 这条测试值得为它专门找一条不碰库的路径：requireIdentity 在**任何**票据查询
+// 之前就把无身份的调用挡掉（controller 里顺序是"先身份、后查票"），
+// 于是 session.CurrentUser 收到空 sid 直接返回 nil —— 401 而无需数据库。
+// 顺序反过来（先按 ticket 查库再判断身份）就既碰库、又泄露"这张票存在吗"。
+var mobileQREndpoints = []endpoint{
+	{"GET", "/api/qr/sessions/qrt_placeholder/preview"},
+	{"POST", "/api/qr/sessions/qrt_placeholder/scan"},
+	{"POST", "/api/qr/sessions/qrt_placeholder/confirm"},
+	{"POST", "/api/qr/sessions/qrt_placeholder/refuse"},
 }
 
 // adminRoutes 必须落在鉴权分组里的端点
@@ -104,7 +141,8 @@ var adminRoutes = []endpoint{
 func TestHTTPContract(t *testing.T) {
 	t.Setenv("IDP_ISSUER", testIssuer)
 
-	base := startServer(t)
+	srv := startServer(t)
+	base := srv.base
 
 	t.Run("发现文档按 issuer 拼出全部端点", func(t *testing.T) {
 		res, body := get(t, base+"/.well-known/openid-configuration")
@@ -289,17 +327,86 @@ func TestHTTPContract(t *testing.T) {
 	})
 }
 
+// TestQRRoutesRegistered 用路由表自省确认扫码端点都挂上了。
+//
+// 为什么不并入"路由清单里的端点都可达（非 404）"那一测：发一次
+// POST /api/qr/sessions 就要往 qr_login_sessions 写一行，而这个测试的
+// 前提是没有数据库（见包注释）。用注册表检查代替请求，既不必为验证
+// "挂没挂"去污染数据，也顺带把那份清单**查不出来的方向**补上：
+// 挂了路由但忘了写进清单，请求式清点会静默通过，这里不会。
+func TestQRRoutesRegistered(t *testing.T) {
+	t.Setenv("IDP_ISSUER", testIssuer)
+	srv := startServer(t)
+
+	registered := make(map[string]bool, len(srv.routes))
+	for _, r := range srv.routes {
+		registered[r] = true
+	}
+	for _, want := range qrRoutes {
+		if !registered[want] {
+			t.Errorf("扫码端点 %s 未注册", want)
+		}
+	}
+}
+
+// TestMobileQREndpointsRejectAnonymous 手机侧四条端点必须把匿名调用挡在 401。
+//
+// 这是扫码功能最不该失守的一处：confirm 是"批准一次登录"的动作，
+// 若某个端点漏了身份校验，任何人拿到 ticket 就能替别人批准登录 ——
+// 而 ticket 就在二维码图片里，是整套流程中最容易外泄的东西。
+//
+// 四条一起测而不是只测一条，正是因为"漏一条"才是真实事故形状：
+// 鉴权写在控制器每个方法里，加新端点时复制粘贴漏掉一行守卫，
+// 单测一条永远发现不了另一条漏了。
+func TestMobileQREndpointsRejectAnonymous(t *testing.T) {
+	t.Setenv("IDP_ISSUER", testIssuer)
+	srv := startServer(t)
+
+	for _, e := range mobileQREndpoints {
+		res, body := request(t, e.method, srv.base+e.path, "application/json", "")
+		if res.StatusCode != http.StatusUnauthorized {
+			t.Errorf("%s %s 状态码 = %d，期望 401（匿名不得批准登录）",
+				e.method, e.path, res.StatusCode)
+			continue
+		}
+		if got := str(body["error"]); got != "unauthenticated" {
+			t.Errorf("%s %s error = %q，期望 unauthenticated", e.method, e.path, got)
+		}
+		// 必须是业务信封：扫码端点与登录/注册同属前端会调的一类，
+		// 少了 code 字段，前端的统一拆包会把失败当成成功数据。
+		if _, has := body["code"]; !has {
+			t.Errorf("%s %s 失败响应缺少 code 字段", e.method, e.path)
+		}
+	}
+}
+
 // ── 测试脚手架 ──────────────────────────────────────────────────────────────
 
-// startServer 在随机空闲端口上启动一个真实服务，返回其 base URL。
-func startServer(t *testing.T) string {
+// testServer 一次启动的观测结果：对外地址 + gf 记下的路由表。
+//
+// 带上路由表是为了能验证"注册了但清单没写"这一类漏登记 ——
+// 只用 HTTP 请求做清点的话，检查是**单向**的：清单里有而实际没挂会失败，
+// 实际挂了而清单里没写却静默通过。自省路由表把这个方向补上，
+// 且完全不发请求，因此对"必须碰库"的端点也适用。
+type testServer struct {
+	base   string
+	routes []string
+}
+
+// startServer 在随机空闲端口上启动一个真实服务。
+//
+// 服务名取自 t.Name() 而不是固定一个：gf 的 g.Server(name) 是**按名字缓存**的，
+// 两个测试用同一个名字会拿到同一个 Server，第二次 router.Register 就在已经
+// 挂好路由的实例上重复注册，被 gf 的重复路由检测直接 FATA 掉 —— 表现是
+// "第二个测试从来没机会跑"，而报错里只提路由名，完全看不出是两个测试在抢实例。
+func startServer(t *testing.T) *testServer {
 	t.Helper()
 
 	ctx := context.Background()
 	config.Load(ctx)
 
 	addr := fmt.Sprintf("127.0.0.1:%d", freePort(t))
-	s := g.Server("auth-hub-router-test")
+	s := g.Server("auth-hub-test-" + strings.ReplaceAll(t.Name(), "/", "-"))
 	s.SetAddr(addr)
 	// 关掉 gf 自带的可选端点与访问日志，避免干扰路由清点
 	s.SetSwaggerPath("")
@@ -318,7 +425,15 @@ func startServer(t *testing.T) string {
 
 	base := "http://" + addr
 	waitReady(t, base)
-	return base
+
+	// gf 的 RouterItem 把方法名与路径分成两个字段；折成 "METHOD:PATH"
+	// 这一种形式，是为了让断言里的期望值能直接照着 router.go 读，
+	// 不必在测试里做两次字段拼接。
+	routes := make([]string, 0, len(s.GetRoutes()))
+	for _, it := range s.GetRoutes() {
+		routes = append(routes, it.Method+":"+it.Route)
+	}
+	return &testServer{base: base, routes: routes}
 }
 
 // freePort 取一个当前空闲的端口

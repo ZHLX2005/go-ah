@@ -1,13 +1,15 @@
-// Package utility 收敛无状态工具函数：随机串与口令哈希。
+// Package utility 收敛无状态工具函数：随机串、口令哈希、摘要。
 //
-// 之所以单独成包而不是随手放进 db 或 logic：这两组函数的调用方横跨
-// 会话、令牌、用户建档三处，放进任何一处的业务包里都会让另一处
+// 之所以单独成包而不是随手放进 db 或 logic：这些函数的调用方横跨
+// 会话、令牌、用户建档、扫码票据几处，放进任何一处的业务包里都会让另一处
 // 反向依赖它。工具函数与业务无关，就该待在业务之外。
 package utility
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 
 	"golang.org/x/crypto/argon2"
 )
@@ -74,4 +76,17 @@ func splitN(s string, sep byte, n int) []string {
 	}
 	out = append(out, s[start:])
 	return out
+}
+
+// Sha256Hex 对字符串取 SHA-256 并以 hex 编码返回（64 字符）。
+//
+// 用于"库里只存摘要、不存凭据原文"的场合（扫码票据的 qr_ctx）。
+// 注意这里**不**是口令哈希：口令要经得起离线爆破所以必须用 argon2id 这种
+// 又慢又吃内存的函数，而 qr_ctx 是 128 bit 随机值，暴力不可行，
+// 用 SHA-256 纯为"表被拖走时拿不去直接用"，快反而是优点。
+// 把两者混为一谈（拿 sha256 存口令，或拿 argon2id 存高频查询的随机凭据）
+// 都是常见的事故来源，所以这个函数的用途在名字和注释里钉死。
+func Sha256Hex(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
 }
