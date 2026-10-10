@@ -90,6 +90,67 @@ export function parseAuthParams(sp: URLSearchParams): AuthParams {
   }
 }
 
+// ══ 扫码登录 ════════════════════════════════════════════════════════════════
+
+/**
+ * 扫码票据状态。取值与后端 entity.QRStatus* 一一对应，**是契约不是提示**：
+ * QrPanel 按它分支渲染，少认一个值就会把界面卡在默认分支上。
+ *
+ * expired 是服务端算出来的（库里并不存这个值）—— 过期与否由 expires_at
+ * 决定，如果只靠后端定时改写状态，服务重启期间的票据会一直显示 pending。
+ */
+export type QRStatus =
+  | 'pending'
+  | 'scanned'
+  | 'confirmed'
+  | 'consumed'
+  | 'cancelled'
+  | 'expired'
+
+/** POST /api/qr/sessions 的 data */
+export interface QRSessionCreated {
+  ticket: string
+  /** 二维码的内容：一个 https URL，手机扫出来直接打开它 */
+  qr_content: string
+  /** 票据存活秒数（服务端时钟为准，前端拿它画倒计时） */
+  expires_in: number
+  /** 建议轮询间隔（毫秒），由服务端下发 */
+  interval_ms: number
+}
+
+/** GET /api/qr/sessions/{ticket} 的 data */
+export interface QRPollResult {
+  status: QRStatus
+  expires_in: number
+}
+
+/** POST /api/qr/sessions/{ticket}/claim 的 data（与 LoginResult 去掉 return_to） */
+export interface QRClaimResult {
+  username: string
+  nickname: string
+}
+
+/** GET /api/qr/sessions/{ticket}/preview 里"要被登录的那台机器" */
+export interface QRPCInfo {
+  /** 服务端解析过的设备摘要，如 "Chrome · Windows"。不是原始 UA 串 */
+  ua: string
+  ip: string
+  /** IP 粗分类（本机 / 内网 / 公网），best-effort */
+  geo: string
+  created_at: string
+}
+
+/** GET /api/qr/sessions/{ticket}/preview 的 data —— 手机确认页的全部素材 */
+export interface QRPreviewResult {
+  status: QRStatus
+  pc: QRPCInfo
+}
+
+/** scan / confirm 的 data */
+export interface QRStatusResult {
+  status: QRStatus
+}
+
 // ══ 管理台 ══════════════════════════════════════════════════════════════════
 
 /** GET /api/admin/users 的行 */

@@ -3,6 +3,7 @@ import type { FormEvent } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { authApi, ApiFailure } from '@/api'
 import { Alert, Button, Field, Input } from '@/ui'
+import QrPanel from '@/pages/QrPanel'
 
 /**
  * 登录页 /login
@@ -12,11 +13,20 @@ import { Alert, Button, Field, Input } from '@/ui'
  * 登录成功后按后端返回的 return_to 整页跳回去，继续授权流程 ——
  * **不能用前端路由跳**，因为 return_to 是 /oauth2/auth 这个服务端端点，
  * 它要靠浏览器发起真实请求才会走 302 → 授权确认页。
+ *
+ * 两种登录方式（口令 / 扫码）在这里**汇成同一条出口**：
+ * 扫码领取到会话后执行的是与口令登录完全相同的一句跳转。这不是偷懒 ——
+ * "扫码只等价于证明了身份，不等价于同意授权"，所以扫码之后照样要过 /consent。
+ * 如果哪天有人想给扫码单独接一条"直接回业务方"的捷径，那是在把授权同意偷偷合并进登录，
+ * 少了那一屏，用户就不知道自己把哪些信息交给了哪个应用。
  */
+type Mode = 'password' | 'qr'
+
 export default function LoginPage() {
   const [sp] = useSearchParams()
   const returnTo = sp.get('return_to') ?? '/oauth2/auth'
 
+  const [mode, setMode] = useState<Mode>('password')
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [err, setErr] = useState('')
@@ -47,6 +57,11 @@ export default function LoginPage() {
     }
   }
 
+  /** 扫码领取成功：会话 Cookie 已由后端在这次响应里下发，与口令登录同一出口 */
+  function onQrClaimed() {
+    window.location.href = returnTo
+  }
+
   return (
     <div className="auth-shell">
       <div className="auth-card">
@@ -62,41 +77,65 @@ export default function LoginPage() {
 
         <div className="auth-divider" />
 
-        <form onSubmit={onSubmit} className="stack" style={{ gap: 14 }}>
-          <Field label="账号或邮箱">
-            <Input
-              size="lg"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              placeholder="账号或邮箱"
-              autoComplete="username"
-              autoFocus
-            />
-          </Field>
+        <div className="auth-tabs">
+          <button
+            type="button"
+            className={'auth-tab' + (mode === 'password' ? ' auth-tab--on' : '')}
+            onClick={() => setMode('password')}
+          >
+            账号密码
+          </button>
+          <button
+            type="button"
+            className={'auth-tab' + (mode === 'qr' ? ' auth-tab--on' : '')}
+            onClick={() => setMode('qr')}
+          >
+            手机扫码
+          </button>
+        </div>
 
-          <Field label="密码">
-            <Input
-              size="lg"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="请输入密码"
-              autoComplete="current-password"
-            />
-          </Field>
+        <div className="auth-divider" />
 
-          {err !== '' && <Alert kind="error">{err}</Alert>}
+        {mode === 'qr' ? (
+          <QrPanel onClaimed={onQrClaimed} />
+        ) : (
+          <form onSubmit={onSubmit} className="stack" style={{ gap: 14 }}>
+            <Field label="账号或邮箱">
+              <Input
+                size="lg"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder="账号或邮箱"
+                autoComplete="username"
+                autoFocus
+              />
+            </Field>
 
-          <Button variant="primary" size="lg" block type="submit" disabled={busy}>
-            {busy ? '登录中…' : '登 录'}
-          </Button>
-        </form>
+            <Field label="密码">
+              <Input
+                size="lg"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="请输入密码"
+                autoComplete="current-password"
+              />
+            </Field>
+
+            {err !== '' && <Alert kind="error">{err}</Alert>}
+
+            <Button variant="primary" size="lg" block type="submit" disabled={busy}>
+              {busy ? '登录中…' : '登 录'}
+            </Button>
+          </form>
+        )}
 
         {/* 这里曾经有一个「一键填充 test / test123456」的按钮。
             它在演示环境里很省事，但只要有一次带真实口令的部署被构建，
             口令就作为字面量进了公开可下载的 JS 产物（以及浏览器缓存、
             CDN 日志）。管理员的取值本来就由 IDP_ADMIN_* 配置决定，
-            前端无从得知也不该知道，所以整块删掉而不是改成读环境变量。 */}
+            前端无从得知也不该知道，所以整块删掉而不是改成读环境变量。
+            —— 加扫码 Tab 时不要把它当"旧代码"顺手恢复回来。 */}
 
         <div className="auth-divider" />
 

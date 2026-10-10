@@ -508,6 +508,99 @@ code,
   text-align: center;
 }
 
+/* ── 登录页方式切换（口令 / 扫码）───────────────────────────────────────── */
+
+/* 两种登录方式是平级选择而不是主次流程，所以用等宽两段而不是面包屑或折叠面板。
+   选中态用「底部 2px 实心黑 + 文字加重」—— 遵守本文件开头那条"状态靠明度与
+   字重表达、不引入色相"的规则。 */
+.auth-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--c-border);
+}
+.auth-tab {
+  flex: 1;
+  padding: 10px 0;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  font: inherit;
+  font-size: 14px;
+  color: var(--c-text-3);
+  cursor: pointer;
+  margin-bottom: -1px;
+}
+.auth-tab:hover {
+  color: var(--c-text-2);
+}
+.auth-tab--on {
+  color: var(--c-text);
+  font-weight: 600;
+  border-bottom-color: var(--c-invert);
+}
+
+/* ── 扫码登录 ──────────────────────────────────────────────────────────── */
+
+/* 二维码外面必须有一圈实线框：纸面打印/投影仪上浅色二维码会跟白色背景糊在一起，
+   而扫不出来时用户看不出是码的问题还是框的问题。 */
+.qr-frame {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 204px;
+  height: 204px;
+  padding: 8px;
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--radius);
+  background: var(--c-bg);
+  transition: opacity 0.2s ease;
+}
+.qr-frame img {
+  display: block;
+  image-rendering: pixelated;
+}
+
+/* 遮罩盖在二维码上方而不是替换它：用户要能看出"这张码还在，只是当前不可用"，
+   否则 scanned 态下他会以为码消失了、进而去重复扫码。 */
+.qr-veil {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 12px;
+  text-align: center;
+  font-size: 13px;
+  line-height: 1.6;
+  font-weight: 600;
+  color: var(--c-text);
+}
+
+/* 手机确认页里"要被登录的那台机器"的画像。
+   这是用户点确认前唯一能核对的东西，所以视觉权重必须高于装饰性文案。 */
+.qr-device {
+  border: 1px solid var(--c-border-strong);
+  border-left: 3px solid var(--c-invert);
+  border-radius: var(--radius);
+  background: var(--c-bg-subtle);
+  padding: 14px 16px;
+}
+.qr-device__label {
+  font-size: 11px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--c-text-3);
+}
+.qr-device__value {
+  margin-top: 4px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--c-text);
+}
+
 .avatar {
   display: inline-flex;
   align-items: center;

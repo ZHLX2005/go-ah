@@ -20,6 +20,11 @@ import type {
   InviteUpdateInput,
   InviteUsageRow,
   LoginResult,
+  QRClaimResult,
+  QRPollResult,
+  QRPreviewResult,
+  QRSessionCreated,
+  QRStatusResult,
   RefreshTokenRow,
   RegisterInput,
   RegisterResult,
@@ -76,6 +81,66 @@ export const authApi = {
    */
   submitConsent: (payload: AuthParams & { decision: 'allow' | 'deny' }) =>
     request<{ redirect_to?: string; error?: string }>('POST', '/api/consent', { body: payload }),
+}
+
+// ══ 扫码登录 ════════════════════════════════════════════════════════════════
+
+/**
+ * 扫码登录端点。设计文档见 docs/design/qr-login.md，此处只列调用口径。
+ *
+ * 分成 pc / mobile 两组不是为了好看，而是因为两边的**凭据完全不同**：
+ *   pc 组依赖后端下发的 qr_ctx Cookie（fetch 的 credentials:'include' 自动带上），
+ *        调用方本身不需要登录；
+ *   mobile 组依赖 idp_session Cookie（H5 路径）或 Bearer token（App 路径），
+ *        未登录时一律 401，页面必须按 reason==='unauthenticated' 去跳登录。
+ * 混用会出事故：让 PC 去调 mobile 组的接口，未登录时会拿到 401 而不是 pending。
+ */
+export const qrApi = {
+  // ── PC 侧 ────────────────────────────────────────────────────────────────
+
+  /**
+   * 创建一张待扫码票据。
+   *
+   * **不接受任何入参**：要在手机上展示的设备画像由服务端从请求头解析。
+   * 允许前端传"我是 Windows Chrome"，就等于允许攻击者伪造用户唯一能核对的那条信息。
+   * 同时 return_to 也不发给后端 —— 票据只代表"有台机器想登录"，
+   * 不代表"登录完要去授权哪个应用"，否则受害者的批准会被用来完成攻击者的授权。
+   */
+  create: () => http.post<QRSessionCreated>('/api/qr/sessions', {}),
+
+  /** 轮询状态（只读、无副作用；领取是独立的 claim） */
+  poll: (ticket: string) => http.get<QRPollResult>(`/api/qr/sessions/${encodeURIComponent(ticket)}`),
+
+  /**
+   * 领取登录态。**唯一**会下发 idp_session 的扫码端点。
+   *
+   * 失败（qr_not_ready / qr_expired / 已消费…）由 ApiFailure 抛出，
+   * 调用方必须把它当成"还要继续等或该刷新二维码"，而不是当成登录成功。
+   */
+  claim: (ticket: string) =>
+    http.post<QRClaimResult>(`/api/qr/sessions/${encodeURIComponent(ticket)}/claim`, {}),
+
+  /** 作废当前票据（换一张新二维码之前调，避免旧码还能被领） */
+  cancel: (ticket: string) =>
+    http.post<{ message: string }>(`/api/qr/sessions/${encodeURIComponent(ticket)}/cancel`, {}),
+
+  // ── 手机侧（需已有身份）────────────────────────────────────────────────────
+
+  /** 确认页取数：把"要被登录的那台机器"的画像拿给手机上的人看 */
+  preview: (ticket: string) =>
+    http.get<QRPreviewResult>(`/api/qr/sessions/${encodeURIComponent(ticket)}/preview`),
+
+  /** 标记已扫码，驱动 PC 端显示"已扫码，等待确认" */
+  scan: (ticket: string) =>
+    http.post<QRStatusResult>(`/api/qr/sessions/${encodeURIComponent(ticket)}/scan`, {}),
+
+  /** 批准这次登录 —— 整个扫码流程里唯一的授权动作 */
+  confirm: (ticket: string) =>
+    http.post<QRStatusResult>(`/api/qr/sessions/${encodeURIComponent(ticket)}/confirm`, {}),
+
+  /** "不是我操作的要登录"：拒绝并作废票据 */
+  refuse: (ticket: string) =>
+    http.post<{ message: string }>(`/api/qr/sessions/${encodeURIComponent(ticket)}/refuse`, {}),
 }
 
 // ══ 管理后台（需全局会话 + users.is_admin）══════════════════════════════════
