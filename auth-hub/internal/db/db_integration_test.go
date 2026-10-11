@@ -324,6 +324,7 @@ var presetClientIDs = []string{
 	consts.ClientTemplateWeb,
 	consts.ClientCLI,
 	consts.ClientFRApp,
+	consts.ClientMnRT,
 }
 
 func TestInit_Idempotent(t *testing.T) {

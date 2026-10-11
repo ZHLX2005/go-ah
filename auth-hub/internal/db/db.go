@@ -561,6 +561,31 @@ func seed(ctx context.Context, opt InitOptions) error {
 		return err
 	}
 
+	// ── 远程输入桥 mn-rt：PC 上的 CLI 用回环收码 ─────────────────────────────
+	//
+	// 只放行回环通配，**不放行 mn-rt 服务器自己的地址**——因为今天没有任何发起方用它：
+	//   · PC CLI 在本机 127.0.0.1 随机端口起一次性监听收码，自己拿 PKCE 换 token
+	//     （免得用户复制粘贴授权码），所以用的是回环那两条；
+	//   · 手机端 fr 拿的是它自己 fr-app 的 token，直接 Bearer 打 mn-rt 的 /auth/verify，
+	//     根本不经过这个 client 的回调；
+	//   · 服务端自己的浏览器回调需要服务端持有 PKCE verifier（要一份 RP 会话），
+	//     这条路还没实现。登记一个收了码也处理不了的地址，只会把故障变成一个
+	//     没有解释的 404——**白名单里只写真的走得通的路**。
+	//
+	// 为什么不复用 oidc-cli：client_id 是审计与吊销的单位，共用之后
+	// "哪个平台在发 token""要停哪条接入"都问不出来。
+	if err := ensureClient(ctx, clients, consts.ClientMnRT, now, g.Map{
+		"client_id":     consts.ClientMnRT,
+		"client_name":   "远程输入桥 mn-rt（PC CLI）",
+		"redirect_uris": "http://127.0.0.1:*/callback http://localhost:*/callback",
+		"scopes":        "openid profile email",
+		"is_public":     true,
+		"pkce_required": true,
+		"enabled":       true,
+	}); err != nil {
+		return err
+	}
+
 	_ = do.OAuthClient{} // 保留 do 包引用：写入侧结构体在此包内使用
 	return nil
 }

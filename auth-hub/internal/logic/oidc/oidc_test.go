@@ -130,6 +130,42 @@ func TestClientAllowsRedirect_LoopbackWildcard(t *testing.T) {
 	}
 }
 
+// TestClientAllowsRedirect_MixedWhitelist 同一客户端混放"回环通配 + 公网精确"两类地址。
+//
+// 今天没有任何内置客户端真的是这个形状（mn-rt 只登记了回环，理由见 db.go 种子注释），
+// 但白名单存储本来就是空格分隔的多值，两类混放在所难免，所以把匹配语义钉死：
+// 尤其要防通配逻辑外溢，把公网那条也一起放宽成"任意端口可用"。
+func TestClientAllowsRedirect_MixedWhitelist(t *testing.T) {
+	c := &entity.OAuthClient{
+		RedirectURIs: "http://127.0.0.1:*/callback http://localhost:*/callback " +
+			"http://1.94.101.189:8790/auth/oidc/callback",
+	}
+
+	allow := []string{
+		"http://127.0.0.1:54321/callback",
+		"http://localhost:80/callback",
+		"http://1.94.101.189:8790/auth/oidc/callback",
+	}
+	for _, u := range allow {
+		if !ClientAllowsRedirect(c, u) {
+			t.Errorf("白名单应放行: %s", u)
+		}
+	}
+
+	deny := []struct{ uri, why string }{
+		{"http://1.94.101.189:8791/auth/oidc/callback", "公网地址端口必须精确，不容通配"},
+		{"http://1.94.101.189:8790/auth/oidc/callbackx", "路径后缀伪装"},
+		{"http://1.94.101.189:8790/evil", "换路径"},
+		{"http://evil.com/1.94.101.189:8790/auth/oidc/callback", "换主机"},
+		{"http://127.0.0.1:9999/auth/oidc/callback", "回环项的路径也严格受限"},
+	}
+	for _, d := range deny {
+		if ClientAllowsRedirect(c, d.uri) {
+			t.Errorf("应拒绝 (%s): %s", d.why, d.uri)
+		}
+	}
+}
+
 // TestMatchRedirectPattern_EdgeCases 边界与解析陷阱
 func TestMatchRedirectPattern_EdgeCases(t *testing.T) {
 	// 曾经的 bug：用 strings.Index(pattern, "/") 取路径，
