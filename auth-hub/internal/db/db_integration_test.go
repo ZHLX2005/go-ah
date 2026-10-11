@@ -283,19 +283,49 @@ func TestInit_SeedsClients(t *testing.T) {
 		t.Error("gs-ac 必须强制 PKCE")
 	}
 
-	// 模板客户端与 CLI 客户端也必须就位
-	for _, id := range []string{consts.ClientTemplateWeb, consts.ClientCLI} {
-		n, err := db.Instance().Model(consts.TableOAuthClient).Ctx(ctx).Where("client_id", id).Count()
-		if err != nil {
+	// 模板客户端、CLI 客户端与 Flutter App 客户端也必须就位。
+	// 三个都是公共客户端 + 强制 PKCE，所以一起断言同一组性质：
+	// fr-app 尤其不能漏 —— 它靠回环端口通配收授权码，
+	// 一旦 pkce_required 被误写成 false，"捡到 code 就能换 token"直接成立。
+	for _, id := range presetClientIDs {
+		var c struct {
+			Id           int64
+			IsPublic     *bool
+			PKCERequired *bool
+			Enabled      *bool
+		}
+		if err := db.Instance().Model(consts.TableOAuthClient).Ctx(ctx).
+			Where("client_id", id).Scan(&c); err != nil {
 			t.Fatalf("查询客户端 %s 失败: %v", id, err)
 		}
-		if n == 0 {
+		if c.Id == 0 {
 			t.Errorf("未注册内置客户端 %s", id)
+			continue
+		}
+		if c.IsPublic == nil || !*c.IsPublic {
+			t.Errorf("%s 应为公共客户端（无 secret）", id)
+		}
+		if c.PKCERequired == nil || !*c.PKCERequired {
+			t.Errorf("%s 必须强制 PKCE", id)
+		}
+		if c.Enabled == nil || !*c.Enabled {
+			t.Errorf("%s 应为启用状态", id)
 		}
 	}
 }
 
 // TestInit_Idempotent Init 每次启动都会跑一遍，重复执行不能产生重复数据
+// presetClientIDs 种子应当注册的全部内置客户端。
+//
+// 这份清单同时喂给"是否都就位"和"种子幂等后的行数"两处断言。
+// 分开写的话，加一个内置客户端就得记得改那个魔法数 —— 忘了改不会漏掉真实故障，
+// 只会让 CI 红在一次纯粹的计数变化上，那种失败教不会任何人任何东西。
+var presetClientIDs = []string{
+	consts.ClientTemplateWeb,
+	consts.ClientCLI,
+	consts.ClientFRApp,
+}
+
 func TestInit_Idempotent(t *testing.T) {
 	dsn, _ := testpg.NewSchema(t)
 	ctx := gctx.New()
@@ -320,12 +350,12 @@ func TestInit_Idempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("统计客户端失败: %v", err)
 	}
-	// 一次种子：1 个账号 + 3 个客户端
+	// 一次种子：1 个账号 + presetClientIDs 个客户端（gs-ac 由另一个用例单独覆盖）
 	if users != 1 {
 		t.Errorf("用户数 = %d, 期望 1（种子必须幂等）", users)
 	}
-	if clients != 3 {
-		t.Errorf("客户端数 = %d, 期望 3（种子必须幂等）", clients)
+	if want := len(presetClientIDs) + 1; clients != want {
+		t.Errorf("客户端数 = %d, 期望 %d（种子必须幂等）", clients, want)
 	}
 }
 

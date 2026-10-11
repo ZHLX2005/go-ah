@@ -214,4 +214,14 @@ const (
 	ClientGSAC = "gs-ac"
 	// ClientCLI 命令行客户端的 client_id
 	ClientCLI = "oidc-cli"
+	// ClientFRApp 小豆子 FR（Flutter App）的 client_id
+	//
+	// 它存在的理由不是"多一个客户端"，而是**移动端拿不到别的合法回调地址**：
+	// 本服务的 redirect_uri 白名单只放行精确匹配与回环端口通配
+	// （见 logic/oidc 的 ClientAllowsRedirect / ValidRedirectURIs），
+	// 而自定义 scheme（com.example.app:/cb）与 Universal Link 都需要 HTTPS
+	// 或改动白名单校验才能注册。Android 上 App 在自己进程里监听
+	// 127.0.0.1 是可行的（浏览器与 App 同机），所以复用回环通配这条路
+	// 让移动端**不需要改一行协议代码**就能接入。
+	ClientFRApp = "fr-app"
 )

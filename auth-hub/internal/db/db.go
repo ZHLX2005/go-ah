@@ -542,6 +542,25 @@ func seed(ctx context.Context, opt InitOptions) error {
 		return err
 	}
 
+	// ── Flutter App（小豆子 FR）：同样注册回环通配 ─────────────────────────
+	//
+	// App 在授权前于本机起一个一次性监听（或用 WebView 直接拦下 302，
+	// 不真的收包），端口每次随机 —— 所以端口必须通配，主机与路径仍然严格受限。
+	// 与 oidc-cli 共用一套匹配规则，不为此新增白名单形态，
+	// 是因为白名单校验是整个 OIDC 实现里最不能出错的一段，多一种形状就多一分风险。
+	if err := ensureClient(ctx, clients, consts.ClientFRApp, now, g.Map{
+		"client_id":        consts.ClientFRApp,
+		"client_name":      "小豆子 FR（Flutter App）",
+		"redirect_uris":    "http://127.0.0.1:*/callback http://localhost:*/callback",
+		"scopes":           "openid profile email",
+		"is_public":        true,
+		"pkce_required":    true,
+		"enabled":          true,
+		"post_logout_uris": "http://127.0.0.1:*/* http://localhost:*/*",
+	}); err != nil {
+		return err
+	}
+
 	_ = do.OAuthClient{} // 保留 do 包引用：写入侧结构体在此包内使用
 	return nil
 }
