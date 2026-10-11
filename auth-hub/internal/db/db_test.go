@@ -81,7 +81,10 @@ func TestParseDSN_PostgresqlScheme(t *testing.T) {
 }
 
 func TestParseDSN_PgsqlLink(t *testing.T) {
-	node, schema, err := ParseDSN("pgsql:postgres:pw@tcp(47.110.80.47:5432)/postgres?sslmode=disable")
+	// 主机用 127.0.0.1 而不是任何真实地址：本仓库是公开的，而这条测试只验证
+	// DSN **解析**（Type / search_path / 原有 query 是否保留），根本不连库。
+	// 下面几条断言没有一处依赖主机名，换成真实地址只会平白泄露一台服务器。
+	node, schema, err := ParseDSN("pgsql:postgres:pw@tcp(127.0.0.1:5432)/postgres?sslmode=disable")
 	if err != nil {
 		t.Fatalf("解析失败: %v", err)
 	}
