@@ -26,6 +26,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,6 +37,7 @@ import (
 	"github.com/ZHLX2005/go-ah/auth-hub/internal/config"
 	"github.com/ZHLX2005/go-ah/auth-hub/internal/consts"
 	"github.com/ZHLX2005/go-ah/auth-hub/internal/controller/response"
+	"github.com/ZHLX2005/go-ah/auth-hub/internal/limiter"
 	"github.com/ZHLX2005/go-ah/auth-hub/internal/logic/oidc"
 	"github.com/ZHLX2005/go-ah/auth-hub/internal/logic/qr"
 	"github.com/ZHLX2005/go-ah/auth-hub/internal/logic/session"
@@ -49,6 +51,49 @@ type Controller struct{}
 
 // New 构造控制器
 func New() *Controller { return &Controller{} }
+
+// ── 限流 ──────────────────────────────────────────────────────────────────
+//
+// 为什么在控制器里逐个端点判，而不走 router 的分组中间件：
+// router.go 的既有习惯是"中间件挂在分组上，新增端点自动受保护"，
+// 但这里恰好不能这么做 —— /api/qr/* 八条端点的合理频率差着量级：
+// 轮询端点正常用法就是每 1.5 秒一次（约 40 次/分钟），
+// 而建票一分钟超过 3 次已经是在刷。挂同一个桶要么放过刷票，
+// 要么把正常轮询打成 429。所以只能按端点分别设，代价是
+// "新增端点忘了设限流"没人兜底，靠下面这段注释和 §11.5 提醒后来的人。
+//
+// 为什么没有再加一个"全进程总量"桶：听起来能防分布式灌表，实际上
+// 是把资源问题换成可用性问题 —— 一个攻击者就能把全局额度打满，
+// 让所有正常用户都登录不了。单 IP 桶挡住的正是"一个人无成本刷"这件事，
+// 而分布式来源不是进程内限流该负责的范围（那需要网关层）。
+var (
+	// qrCreateLimit 建票：按来源 IP。
+	//
+	// 10 次/分钟、突发 20。定这个数的依据是"一张票活 120 秒"：
+	// 一分钟内建到第 11 张，意味着前面 10 张一张都没被扫 —— 那已经不是
+	// 人在登录。给 20 的突发是为了容纳"刷新几次 + 旁边同事也在这台出口建码"。
+	qrCreateLimit = limiter.New(limiter.Spec{Capacity: 20, PerMinute: 10})
+
+	// qrConfirmLimit 批准登录：按批准者账号。
+	//
+	// 30 次/分钟、突发 60。这是全平台后果最重的一次写操作（一次批准 =
+	// 给别人一台机器发会话），所以哪怕它已经天然被"必须先建票"约束住，
+	// 仍然单独设一道：账号被脚本驱动时，这一道是最后的刹车。
+	qrConfirmLimit = limiter.New(limiter.Spec{Capacity: 60, PerMinute: 30})
+)
+
+// errCodeRateLimited 是对外契约里的原因码，前端与 CLI 按它分支。
+const errCodeRateLimited = "rate_limited"
+
+// tooManyRequests 写 429 并带 Retry-After。
+//
+// 429 而不是 400：客户端需要知道"稍后再试可能成功"与"你请求本身不对"
+// 的区别，否则它只会把同一个错误重试到永远，或者反过来——看到 4xx
+// 就彻底放弃，而这里其实只是慢了一秒。
+func tooManyRequests(r *ghttp.Request, retryAfter int, msg string) {
+	r.Response.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+	response.BizError(r, http.StatusTooManyRequests, errCodeRateLimited, msg)
+}
 
 // scanPagePath 手机扫码后打开的路径。
 //
@@ -69,6 +114,19 @@ func (c *Controller) Create(ctx context.Context, req *v1.CreateReq) error {
 	ua := utility.SummarizeUserAgent(rawUA)
 	ip := r.GetClientIp()
 	geo := utility.ClassifyIP(ip)
+
+	// 限流放在建票**之前**：这条端点是全平台唯一"没有任何身份就能写入"的入口，
+	// 一次调用就是一行 INSERT。放在之后写出去的行已经落库了，那就不是限流而是记账。
+	//
+	// 键取 r.GetClientIp()。经 nginx 反代时它来自 X-Real-IP，而 nginx.conf 用
+	// $remote_addr 覆写了这个头，所以客户端伪造不了。但**直连后端端口**
+	// （容器网络里的 8080）时该头由客户端说了算，限流即可被绕过 ——
+	// 部署上 8080 不对外，这是前提而非已验证的保证，改拓扑时要重新确认。
+	if !qrCreateLimit.Allow(ip) {
+		tooManyRequests(r, qrCreateLimit.RetryAfter(ip),
+			"创建二维码过于频繁，请稍后再试")
+		return nil
+	}
 
 	created, err := qr.Create(ctx, qr.CreateInput{
 		PcUA: ua, PcIP: ip, PcGeo: geo,
@@ -240,6 +298,18 @@ func (c *Controller) Confirm(ctx context.Context, req *v1.ConfirmReq) error {
 
 	u, ok := c.requireIdentity(ctx, r)
 	if !ok {
+		return nil
+	}
+	// 按批准者限流，且必须放在身份解析**之后** —— 没身份就没有可归因的键，
+	// 按 IP 限则会让一个 NAT 后面所有用户互相拖累。
+	//
+	// 这是全平台后果最重的一次写操作：一次成功批准 = 给别人一台机器发出
+	// 一个属于这个账号的会话。它天然已经被"攻击者得先有自己的票"约束住，
+	// 但账号一旦被脚本驱动（手机丢了、恶意 App 拿到 access_token），
+	// 这一道是最后的刹车。
+	if !qrConfirmLimit.Allow(strconv.FormatInt(u.Id, 10)) {
+		tooManyRequests(r, qrConfirmLimit.RetryAfter(strconv.FormatInt(u.Id, 10)),
+			"批准操作过于频繁，请稍后再试")
 		return nil
 	}
 	if err := qr.Confirm(ctx, req.Ticket, u.Id, utility.SummarizeUserAgent(r.Header.Get("User-Agent"))); err != nil {

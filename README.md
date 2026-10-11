@@ -150,7 +150,7 @@ cd ../../ && go run main.go
 | `GET /.well-known/jwks.json` | RSA 公钥（id_token RS256 验签） |
 | `POST /api/login` `GET /api/me` `POST /api/logout` `GET/POST /api/consent` | auth-hub 前端页面配套 API |
 | `POST /api/register` | **自助注册（需邀请码）**：校验并核销邀请码 → 建档 → 直接下发会话，见 §5.3 |
-| `POST/GET /api/qr/sessions*` | **手机扫码登录**：建票 / 轮询 / 领取 / 作废 + 手机侧预览 / 扫码 / 批准 / 拒绝，见 §5.4 |
+| `POST/GET /api/qr/sessions*` | **手机扫码登录**：建票 / 轮询 / 领取 / 作废 + 手机侧预览 / 扫码 / 批准 / 拒绝，见 §5.4；建票与批准两端有限流，超限回 429 |
 
 ### 5.1 管理后台 API（需管理员会话）
 
@@ -384,6 +384,12 @@ CLI 已把 stdout/stderr 重配为 UTF-8（二维码字符 `▀▄█` 在 cp936
 - **状态迁移一律条件 UPDATE**：`pending→scanned→confirmed→consumed` 每步都靠
   `UPDATE … WHERE <前置状态> AND expires_at > now()` 的 `affected` 行数定胜负，
   并发下 scan/confirm/claim 各只放行一个（比现有 `ConsumeAuthorizationCode` 的读后写更严格）
+- **扫码端点限流**（`internal/limiter`，进程内令牌桶）：建票按来源 IP 10 次/分钟、
+  突发 20；批准按账号 30 次/分钟、突发 60；超限回 **429 + `Retry-After`**。
+  刻意**不给轮询设 IP 限**：轮询正常用法就是每 1.5 秒一次（约 40 次/分钟），
+  一个公司出口 NAT 后面十个人同时登录就能把共享 IP 打到 429 ——
+  那是把防护做成了自我拒绝服务。也不加"全进程总量"桶：那会把资源问题
+  换成可用性问题，一个攻击者就能让所有人登录不了
 - **统一登出**：全局会话 + 业务会话 + 全部 refresh_token 三清
 - **Token 加密持久化（Task4）**（详见 §9）
 - **后台自动续期（Task4）**（详见 §9）
