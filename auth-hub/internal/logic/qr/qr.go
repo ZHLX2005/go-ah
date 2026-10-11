@@ -157,23 +157,31 @@ type View struct {
 
 // Peek 供 PC 轮询查询状态。
 //
-// 防探测：qr_ctx 不匹配（含没带）时，**一律返回 pending**，不暴露真实进度。
+// 防探测：qr_ctx 不匹配（含没带）时，**status 一律返回 pending**，不暴露真实进度。
 // ticket 有 256 bit 熵，猜中不可能，所以这层遮蔽不是防"猜"，而是防"看到"：
 // 二维码会被拍照、截图、投屏，任何拿到图片的人都能读到 URL 里的 ticket。
 // 如果他能看到"某人已经扫过了"，那就是一个真实的信息泄露 ——
 // 而这个信息对合法流程毫无用处，不给才是对的。
+//
+// 但 **expires_in 不参与遮蔽**。这里曾经一起置零，代价很实在：
+// 前端每次轮询都用它覆盖倒计时，于是只要有一次请求没带上 qr_ctx，
+// 屏幕上就立刻显示"0s 后失效"，而票据其实还活着 —— 一个不报错、
+// 只是把用户挡在门外的 bug。而且剩余寿命本来就不是秘密：建票响应里
+// 已经把它公开给任何能拿到这张码的人了。
+//
+// 一句话：要遮的是"进展到哪一步"，不是"这张码还剩多久"。
 func Peek(ctx context.Context, ticket, callerCtx string) (*View, error) {
 	row, err := findByTicket(ctx, ticket)
 	if err != nil {
 		return nil, err
 	}
-	if callerCtx == "" || utility.Sha256Hex(callerCtx) != row.CtxHash {
-		return &View{Status: entity.QRStatusPending}, nil
-	}
 	now := time.Now()
 	left := int(row.ExpiresAt.Sub(now).Seconds())
 	if left < 0 {
 		left = 0
+	}
+	if callerCtx == "" || utility.Sha256Hex(callerCtx) != row.CtxHash {
+		return &View{Status: entity.QRStatusPending, ExpiresIn: left}, nil
 	}
 	return &View{Status: row.EffectiveStatus(now), ExpiresIn: left}, nil
 }

@@ -179,6 +179,11 @@ func TestPeekMasksStatusForOutsiders(t *testing.T) {
 	if v, _ := qr.Peek(ctx, ticket, ""); v.Status != entity.QRStatusPending {
 		t.Fatalf("已 confirmed 但对无 ctx 者必须仍显示 pending，实际 %s", v.Status)
 	}
+	// 遮蔽只管 status，**不该管 expires_in**：前端用它覆盖倒计时，
+	// 置零会让票据看起来"0s 后失效"而其实还活着。
+	if v, _ := qr.Peek(ctx, ticket, ""); v.ExpiresIn <= 0 {
+		t.Fatalf("无 ctx 时 expires_in 被一起遮蔽成 %d，应为真实剩余秒数", v.ExpiresIn)
+	}
 	v, err := qr.Peek(ctx, ticket, qrCtx)
 	if err != nil {
 		t.Fatal(err)
@@ -477,5 +482,37 @@ func TestPurgeOnlyRemovesOldEnough(t *testing.T) {
 	}
 	if _, err := qr.Preview(ctx, fresh); err != nil {
 		t.Fatalf("仍在保留期内的票据不该被删: %v", err)
+	}
+}
+
+// TestPreviewCarriesDeviceInfo 钉住"确认页必须拿得到设备画像"。
+//
+// 写侧一直是对的（建票时 pc_ua/pc_ip/pc_geo 都落库了），坏在**读侧**：
+// 实体字段 PcUa/PcIp/PcGeo 这类"缩写词大小写"能不能被 gdb 从 pc_ua 反推回来，
+// 完全取决于它的名称映射规则，而这条规则不会在任何编译期报错 ——
+// 映射不上就是静默的空字符串，界面上表现为"对方设备信息全空"，
+// 于是确认页永远不给确认按钮，扫码登录整体不可用。
+func TestPreviewCarriesDeviceInfo(t *testing.T) {
+	ctx := newDB(t)
+	ticket, _ := mustCreate(t, ctx)
+
+	pv, err := qr.Preview(ctx, ticket)
+	if err != nil {
+		t.Fatalf("Preview 失败: %v", err)
+	}
+	if pv.PcUA == "" {
+		t.Errorf("PcUA 读回来是空串 —— 列 pc_ua 没映射进字段（建票时明明写入了）")
+	}
+	if pv.PcIP == "" {
+		t.Errorf("PcIP 读回来是空串 —— 列 pc_ip 没映射进字段")
+	}
+	if pv.PcGeo == "" {
+		t.Errorf("PcGeo 读回来是空串 —— 列 pc_geo 没映射进字段")
+	}
+	if pv.PcUA != "Chrome · Windows" {
+		t.Errorf("PcUA = %q, 期望建票时写入的 \"Chrome · Windows\"", pv.PcUA)
+	}
+	if pv.PcIP != "203.0.113.7" {
+		t.Errorf("PcIP = %q, 期望 203.0.113.7", pv.PcIP)
 	}
 }
