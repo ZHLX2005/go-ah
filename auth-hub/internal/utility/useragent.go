@@ -17,9 +17,13 @@ import "strings"
 
 // SummarizeUserAgent 把原始 UA 压成 "浏览器 · 操作系统"。
 //
-// 认不出来时返回 "未知设备"（而不是返回原始串）：把 200 字符的 UA 塞进
-// VARCHAR(255) 并显示到手机上，既不美观也让用户无从核对，
-// 何况"认不出来"本身就是该暴露给用户的信号。
+// 两种"认不出来"要分开，它们给用户的信号不同：
+//   · 完全没给 UA（空串）→ "未知设备"。连一个字都没有，不该拼出"某某 · 某某"
+//     这种看起来像结论的东西；
+//   · 给了但看不懂 → "未知浏览器 · 未知系统"。结构保留、内容留白，
+//     用户能看出"对方报了 UA 但我们读不懂"，而不是误以为对方什么都没发。
+// 两者都绝不回显原始串：把 200 字符塞进 VARCHAR(255) 再显示到手机上，
+// 既不美观也让用户无从核对，而且"认不出来"本身就是该暴露的信号。
 func SummarizeUserAgent(ua string) string {
 	ua = strings.TrimSpace(ua)
 	if ua == "" {
@@ -46,7 +50,12 @@ func SummarizeUserAgent(ua string) string {
 	case strings.Contains(ua, "Chrome/"), strings.Contains(ua, "CriOS/"):
 		browser = "Chrome"
 	case strings.Contains(ua, "curl/"), strings.Contains(ua, "python-requests"),
-		strings.Contains(ua, "Go-http-client"), strings.Contains(ua, "HTTPie"):
+		strings.Contains(ua, "Go-http-client"), strings.Contains(ua, "HTTPie"),
+		strings.Contains(ua, "Dart/"), strings.Contains(ua, "okhttp/"),
+		strings.Contains(ua, "Java/"):
+		// Dart/ 是 Flutter App 的默认 UA，okhttp/ 是 Android 侧原生网络栈的。
+		// 不列进来的话，App 自测建的票会一律显示成"未知浏览器"，
+		// 而"这台机器是谁"恰恰是用户在手机上唯一要核对的信息。
 		// 命令行客户端伪装成浏览器的情况不少，单独标出来：
 		// 用户在手机上看到"命令行工具"时几乎一定会警觉，这正是我们要的。
 		browser = "命令行工具"
