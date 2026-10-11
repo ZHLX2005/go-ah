@@ -35,6 +35,13 @@ blob-report/
 .env.local
 *.local
 
+# ── 本地工具 ──
+# 一次性脚本与它们的 npm/venv 依赖，与项目代码完全隔离在 .tool/ 下。
+# 里面的 node_modules 本来就被上面的规则挡住，这里连脚本一起排除：
+# 只留产物（auth-hub/web/idp-web/public/ 与 src/ui/Logo.tsx）入库。
+# 代价是 logo 生成器不进仓库，改标志色/字形得回本地重跑 .tool/logo-gen。
+.tool/
+
 # ── 编辑器 / 系统 ──
 .vscode/
 .idea/
