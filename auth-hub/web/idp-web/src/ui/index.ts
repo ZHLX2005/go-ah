@@ -22,5 +22,7 @@ export {
 export { DataTable } from './Table'
 export type { Column } from './Table'
 
+export { Logo } from './Logo'
+
 export { Confirm, Modal } from './Modal'
 export { ToastProvider, useToast } from './toast'

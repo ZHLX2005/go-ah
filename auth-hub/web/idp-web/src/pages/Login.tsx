@@ -2,7 +2,7 @@ import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { authApi, ApiFailure } from '@/api'
-import { Alert, Button, Field, Input } from '@/ui'
+import { Alert, Button, Field, Input, Logo } from '@/ui'
 import QrPanel from '@/pages/QrPanel'
 
 /**
@@ -66,7 +66,7 @@ export default function LoginPage() {
     <div className="auth-shell">
       <div className="auth-card">
         <div className="row" style={{ gap: 12 }}>
-          <span className="auth-mark">ID</span>
+          <Logo size={44} className="auth-mark" />
           <div>
             <div style={{ fontWeight: 600, letterSpacing: 0.5 }}>统一登录平台</div>
             <div className="dim" style={{ fontSize: 12 }}>

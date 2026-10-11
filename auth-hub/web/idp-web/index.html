@@ -4,6 +4,16 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light" />
+    <meta name="theme-color" content="#171717" />
+    <!--
+      图标资产在 public/ 下（Vite 原样拷到 dist 根），由本地工具 .tool/logo-gen/
+      生成；那个目录未入库，所以这些文件是**手工维护的产物**。
+      svg 优先、ico 兜底：老浏览器只认 /favicon.ico，所以两个都要挂，
+      且 ico 那条必须带 sizes="any"，否则部分浏览器会按 16px 拉伸 64px 条目。
+    -->
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
     <title>统一登录平台</title>
   </head>
   <body>

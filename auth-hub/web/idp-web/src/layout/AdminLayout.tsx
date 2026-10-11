@@ -3,7 +3,7 @@ import type { ReactNode } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
 import { adminApi, ApiFailure } from '@/api'
 import type { AdminUser } from '@/api/types'
-import { Alert, Button, Loading } from '@/ui'
+import { Alert, Button, Loading, Logo } from '@/ui'
 
 type Gate = 'loading' | 'ok' | 'unauth' | 'forbidden'
 
@@ -74,7 +74,7 @@ export default function AdminLayout() {
     <div className="app">
       <aside className="sidebar">
         <div className="brand">
-          <span className="brand__mark">ID</span>
+          <Logo size={22} className="brand__mark" />
           <span>统一登录平台</span>
         </div>
         <nav className="nav">

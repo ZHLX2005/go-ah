@@ -454,18 +454,11 @@ code,
   padding: 36px 32px;
 }
 .auth-card--wide { max-width: 520px; }
+/* 品牌位。Logo 组件自带徽章（深底 + 穿透成洞的字），这里只留版面约束。
+   刻意**不写 background / color / font-\*** —— 原先这里画的是一个 44px 深色方块
+   配白色 "ID" 文字，那是 logo 缺席时的占位。现在给 <svg> 再铺一层深色底，
+   currentColor 会跟着变白，标志就整块隐形了。要改尺寸改 Logo 的 size 属性。 */
 .auth-mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 44px;
-  height: 44px;
-  border-radius: var(--radius);
-  background: var(--c-invert);
-  color: var(--c-text-inv);
-  font-size: 17px;
-  font-weight: 700;
-  letter-spacing: 0.5px;
   flex: 0 0 auto;
 }
 .auth-foot {
@@ -639,17 +632,9 @@ code,
   font-weight: 600;
   flex: 0 0 auto;
 }
+/* 同 .auth-mark：Logo 自带徽章，这里不再铺底色，只防止被 flex 压扁 */
 .brand__mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  border-radius: var(--radius-sm);
-  background: var(--c-invert);
-  color: var(--c-text-inv);
-  font-size: 11px;
-  font-weight: 700;
+  flex: 0 0 auto;
 }
 .nav { padding: 8px 0 24px; flex: 1; }
 .nav__group {
