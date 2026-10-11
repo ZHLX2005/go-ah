@@ -196,6 +196,17 @@ func registerWeb(ctx context.Context, s *ghttp.Server, distDir string) {
 	// 未命中的路径：API/OIDC 前缀保持 404（否则前端会把 404 页当成路由命中），
 	// 其余交给前端路由（/login、/consent 等由 React Router 处理）。
 	s.BindStatusHandler(http.StatusNotFound, func(r *ghttp.Request) {
+		// 端点自己已经写出响应体时**一个字都不要再加**。
+		//
+		// 这是本文件里最容易看漏的一处耦合：BindStatusHandler 只看最终状态码，
+		// 不看响应是否已完成。所以任何返回 404 的 API 端点（扫码票据不存在
+		// 就是第一个）会被这里追加第二段 JSON，最终发出
+		// `{"code":1,...}{"error":"not_found",...}` —— 那是**非法 JSON**，
+		// 前端与 CLI 的解析会直接失败，而症状长得像"接口返回了奇怪的东西"，
+		// 很难联想到是 404 处理器多写了一遍。
+		if r.Response.BufferLength() > 0 {
+			return
+		}
 		p := r.URL.Path
 		if strings.HasPrefix(p, "/api") ||
 			strings.HasPrefix(p, "/oauth2") ||

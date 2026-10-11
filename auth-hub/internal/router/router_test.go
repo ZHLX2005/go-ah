@@ -13,14 +13,19 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/gogf/gf/v2/frame/g"
+	"github.com/gogf/gf/v2/os/gctx"
 
 	"github.com/ZHLX2005/go-ah/auth-hub/internal/config"
+	"github.com/ZHLX2005/go-ah/auth-hub/internal/db"
 	"github.com/ZHLX2005/go-ah/auth-hub/internal/router"
+	"github.com/ZHLX2005/go-ah/auth-hub/internal/testpg"
 )
 
 // testIssuer 测试期固定的 issuer，让发现文档的断言不受宿主环境变量影响
@@ -393,13 +398,17 @@ type testServer struct {
 	routes []string
 }
 
-// startServer 在随机空闲端口上启动一个真实服务。
-//
-// 服务名取自 t.Name() 而不是固定一个：gf 的 g.Server(name) 是**按名字缓存**的，
-// 两个测试用同一个名字会拿到同一个 Server，第二次 router.Register 就在已经
-// 挂好路由的实例上重复注册，被 gf 的重复路由检测直接 FATA 掉 —— 表现是
-// "第二个测试从来没机会跑"，而报错里只提路由名，完全看不出是两个测试在抢实例。
+// startServer 在随机空闲端口上启动一个真实服务（只提供 API，不托管前端产物）。
 func startServer(t *testing.T) *testServer {
+	t.Helper()
+	return startServerWithDist(t, "")
+}
+
+// startServerWithDist 同 startServer，但让 Go 侧托管给定目录作为前端产物。
+//
+// 只有这条路径会注册 SPA 的 404 状态处理器，所以想验证"处理器会不会
+// 在控制器已写过的响应上再追加一段"，必须走它。
+func startServerWithDist(t *testing.T, dist string) *testServer {
 	t.Helper()
 
 	ctx := context.Background()
@@ -416,7 +425,7 @@ func startServer(t *testing.T) *testServer {
 	s.SetDumpRouterMap(false)
 
 	// webDist 传空：容器部署下前端由 nginx 托管，Go 侧只提供 API
-	router.Register(ctx, s, "")
+	router.Register(ctx, s, dist)
 
 	if err := s.Start(); err != nil {
 		t.Fatalf("启动测试服务失败: %v", err)
@@ -521,4 +530,66 @@ func str(v any) string {
 func num(v any) float64 {
 	f, _ := v.(float64)
 	return f
+}
+
+// TestNotFoundBodyIsSingleJSON 钉住"控制器已写出 404 响应体时，SPA 的
+// 404 状态处理器不得再追加内容"。
+//
+// 为什么需要这条测试：BindStatusHandler 只看最终状态码，不看响应是否已完成。
+// 扫码票据不存在时控制器写了 {code:1,error:qr_not_found} 并置 404，
+// 于是处理器又写一遍 {"error":"not_found","path":…}，最终发出
+// 两段拼接的 JSON —— 那是**非法**响应，前端与 CLI 会解析失败，
+// 而症状长得像"接口返回了奇怪的东西"，很难联想到是多写了一遍。
+//
+// 它必须带 webDist 才有效：处理器只在 Go 托管前端产物时才注册
+// （容器部署下由 nginx 托管，这条路径压根不存在）。
+// 也因此需要真库 —— 要走到控制器的查票分支。
+func TestNotFoundBodyIsSingleJSON(t *testing.T) {
+	if os.Getenv(testpg.EnvKey) == "" {
+		t.Skipf("跳过：未设置 %s", testpg.EnvKey)
+	}
+	dsn, _ := testpg.NewSchema(t)
+	ctx := gctx.New()
+	if err := db.Init(ctx, db.InitOptions{
+		DSN: dsn, GSACRedirectURIs: "http://127.0.0.1:8081/oauth/callback",
+	}); err != nil {
+		t.Fatalf("db.Init 失败: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Instance().Close(ctx) })
+
+	// 造一个"前端产物目录"，让 registerWeb 真的把 404 处理器挂上
+	dist := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dist, "index.html"), []byte("<html></html>"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("IDP_ISSUER", testIssuer)
+	srv := startServerWithDist(t, dist)
+
+	// 要断言的是"原始字节能否被解析成**一个** JSON 值"，所以这里刻意不走
+	// 已经帮你 Unmarshal 的 get()：双写时 get() 会直接报一个指不到根因的错。
+	resp, err := http.Get(srv.base + "/api/qr/sessions/qrt_definitely_not_exist")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("状态码 = %d, 期望 404", resp.StatusCode)
+	}
+
+	// 关键断言：整个响应体必须是**一个** JSON 对象。
+	// 双写时 json.Unmarshal 会报 "invalid character '{' after top-level value"。
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("404 响应体不是单个合法 JSON（很可能被状态处理器追加了第二段）: %v\nbody=%q",
+			err, string(body))
+	}
+	// 且必须是控制器那份业务信封，而不是处理器的 not_found
+	if parsed["error"] != "qr_not_found" {
+		t.Errorf("error = %v, 期望 qr_not_found（被处理器覆盖说明守卫没生效）", parsed["error"])
+	}
 }
