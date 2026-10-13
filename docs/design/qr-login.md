@@ -44,7 +44,7 @@ PC 浏览器仍然走完全不变的标准流程：`/oauth2/auth` → 发现未�
 
 | # | 事实 | 锚点 |
 |---|---|---|
-| 1 | 全局会话 = `user_sessions` 表一行 + `idp_session` Cookie；`session.Issue(ctx, userID)` 生成 `utility.RandomToken(32)`（32 字节 crypto/rand → 43 字符 RawURL），TTL 8 小时，**无滑动续期** | `internal/logic/session/session.go:22-35`、`internal/consts/consts.go:34,56` |
+| 1 | 全局会话 = `user_sessions` 表一行 + `idp_session` Cookie；`session.Issue(ctx, userID)` 生成 `utility.RandomToken(32)`（32 字节 crypto/rand → 43 字符 RawURL），**绝对 TTL 30 天，活跃用户由看门狗自动续期**（剩余 < 24h 时 UPDATE 把 expires_at 重置为 now+30d，cookie MaxAge 同步重写） | `internal/logic/session/session.go:22-35`、`internal/consts/consts.go:61-83`、`internal/middleware/session.go` |
 | 2 | Cookie 由唯一入口下发：`Path:"/"`、`HttpOnly:true`、`MaxAge`，**未显式设置 `Secure` 与 `SameSite`**。注意 gf 的 `SetHttpCookie` 是把 `*http.Cookie` 原样交给 `net/http`、并不补默认值，所以 `Set-Cookie` 里根本没有 `SameSite` 属性；"相当于 Lax" 是**浏览器对无属性 Cookie 的默认行为**，不是框架写进去的 | `internal/controller/response/response.go:74-83` |
 | 3 | `/oauth2/auth` 判定登录态后：未登录 302 `/login?return_to=<urlEncode(/oauth2/auth?原始query)>`，已登录 302 `/consent?<原始query>` | `internal/controller/oidc/oidc.go:143-154` |
 | 4 | 授权请求**不在服务端留痕**：consent 的全部参数靠浏览器 URL 往返，`POST /api/consent` 再把它们提交回来 | `api/oidc/v1/oidc.go:95-110`、`controller/oidc/oidc.go:202-254` |
@@ -509,7 +509,7 @@ Cookie 的默认处置。也就是说这一层防护不在我们代码里，是�
 
 ### 11.6 会话新鲜度（暂不做，列为 P2）
 
-严格来说"手机上有个 8 小时会话"就批准新设备登录，信任链偏长 —— 手机锁在抽屉里时
+严格来说"手机上有个 30 天会话（看门狗自动续期）"就批准新设备登录，信任链偏长 —— 手机锁在抽屉里时
 Session 依旧有效。理想做法是要求"批准扫码的那个会话本身是 5 分钟内认证的"，
 这需要 `user_sessions` 有 `auth_time`（当前没有；`users.last_login_at` 是账号级不是会话级）。
 一期用"App 走 Bearer access_token，10 分钟 TTL，必须有活跃 App 会话"部分覆盖，

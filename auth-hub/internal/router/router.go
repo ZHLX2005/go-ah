@@ -40,6 +40,12 @@ func Register(ctx context.Context, s *ghttp.Server, webDist string) {
 
 	// ── 公开端点：OIDC 协议 + 认证入口 + 授权确认页数据 ──────────────────────
 	s.Group("/", func(group *ghttp.RouterGroup) {
+		// 全局登录会话看门狗：每条带 idp_session cookie 的请求都会做一次
+		// 「DB + cookie」同步续期（middleware/session.go）。挂在分组上
+		// 而不是各控制器各调一次，理由同 RequireAdmin —— 漏一处就是
+		// 「某条路径不会自动续期」的体感 bug。
+		group.Middleware(middleware.TouchSession)
+
 		// 发现文档与公钥必须匿名可取：客户端与业务方靠它自举
 		group.GET("/.well-known/openid-configuration", call[oidcapi.DiscoveryReq](oidcC.Discovery))
 		group.GET("/.well-known/jwks.json", call[oidcapi.JwksReq](oidcC.Jwks))

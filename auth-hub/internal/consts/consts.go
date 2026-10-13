@@ -58,8 +58,28 @@ const (
 	RefreshTokenTTL = 7 * 24 * time.Hour
 	// AuthCodeTTL 授权码有效期 5 分钟
 	AuthCodeTTL = 5 * time.Minute
-	// SessionTTL 全局会话有效期 8 小时
-	SessionTTL = 8 * time.Hour
+	// SessionTTL 全局会话（idp_session cookie + user_sessions.expires_at）有效期 30 天。
+	//
+	// 这是「绝对截止日」，不是「30 天后强制下线」：
+	// 在此期限内，会话可被「看门狗」按活跃度自动续期（见 SessionSlidingThreshold
+	// 与 middleware.TouchSession / session.Touch），活跃用户实际可以一直挂着；
+	// 不活跃用户的会话在截止日自然过期。改这个值要慎重：
+	//
+	//   - 它直接决定浏览器侧 cookie MaxAge（response.SetSessionCookie 在
+	//     Login / Register / QR Claim 三处都用它作为参数）；
+	//   - 它也直接决定 user_sessions.expires_at 的写入值；拉长意味着
+	//     user_sessions 行可能积压 —— 目前 cmd.startJanitor 只清 QR 表，
+	//     这张表没有 janitor 是已知遗留，扩展 TTL 之后积压会变明显。
+	SessionTTL = 30 * 24 * time.Hour
+	// SessionSlidingThreshold 看门狗续期阈值：剩余有效期短于此值时触发续期。
+	//
+	// 为什么不是几小时：续期本质是写一次 UPDATE，阈值越短写越频繁，
+	// 但又必须小于 SessionTTL —— 否则阈值以上时永远触发不了续期，
+	// 体感会"卡在 N 天突然下线"。24h 在两者之间留余量：
+	//   - 给「周末/出差一周不登录」留 6 天缺口，超出 24h 仍能被续；
+	//   - 把每会话的写速率压到「每天至多 1 次 UPDATE」量级，
+	//     不会给 user_sessions 表带来显著负载。
+	SessionSlidingThreshold = 24 * time.Hour
 	// IDTokenTTL id_token 有效期 1 小时
 	IDTokenTTL = 1 * time.Hour
 

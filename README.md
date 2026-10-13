@@ -358,7 +358,7 @@ CLI 已把 stdout/stderr 重配为 UTF-8（二维码字符 `▀▄█` 在 cp936
 
 ## 7. 数据表
 
-**auth-hub（PostgreSQL schema `auth_hub`）**：`users`（含 `last_login_at`，**注册即登录也会写入**）、`oauth_clients`、`oauth_authorization_codes`（一次性，5分钟）、`oauth_refresh_tokens`（7天，登出全吊销）、`oauth_access_tokens`（10分钟，userinfo 鉴权）、`user_sessions`（8小时）、`signing_key_records`（id_token 的 RSA 私钥，**持久化**——否则每次重启换密钥，客户端缓存的 JWKS 会失配、已签发 token 全部验签失败）、`invitation_codes`（注册邀请码：`max_uses / used_count / expires_at / enabled`）、`invitation_code_usages`（使用明细，**删码后保留**）、`qr_login_sessions`（扫码票据：`ticket / ctx_hash / status / user_id / pc_ua / pc_ip / pc_geo / *_at`，生命周期以分钟计但**保留 7 天供审计**，是全平台写入频率最高的表，由 `cmd.startJanitor` 每小时清理）
+**auth-hub（PostgreSQL schema `auth_hub`）**：`users`（含 `last_login_at`，**注册即登录也会写入**）、`oauth_clients`、`oauth_authorization_codes`（一次性，5分钟）、`oauth_refresh_tokens`（7天，登出全吊销）、`oauth_access_tokens`（10分钟，userinfo 鉴权）、`user_sessions`（**30 天**绝对期限，活跃用户由看门狗自动续期——`middleware.TouchSession` 在公开分组上每条带 cookie 的请求做「剩余<24h 时把 expires_at 重置为 now+30d，cookie MaxAge 同步重写」）、`signing_key_records`（id_token 的 RSA 私钥，**持久化**——否则每次重启换密钥，客户端缓存的 JWKS 会失配、已签发 token 全部验签失败）、`invitation_codes`（注册邀请码：`max_uses / used_count / expires_at / enabled`）、`invitation_code_usages`（使用明细，**删码后保留**）、`qr_login_sessions`（扫码票据：`ticket / ctx_hash / status / user_id / pc_ua / pc_ip / pc_geo / *_at`，生命周期以分钟计但**保留 7 天供审计**，是全平台写入频率最高的表，由 `cmd.startJanitor` 每小时清理）
 
 > 新增列（如 `users.last_login_at`）不能只靠 `CREATE TABLE IF NOT EXISTS`：对**已存在**的表它什么都不做。
 > 所以 `schema.sql` 里新列一律写成 `ALTER TABLE … ADD COLUMN IF NOT EXISTS`，并有一条测试拿它当哨兵。

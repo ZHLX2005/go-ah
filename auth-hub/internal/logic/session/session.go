@@ -66,6 +66,47 @@ func CurrentUser(ctx context.Context, sid string) (*entity.User, error) {
 	return &u, nil
 }
 
+// Touch 看门狗：DB 行剩余有效期短于 SessionSlidingThreshold 时，把 expires_at
+// 重置为 now + SessionTTL。返回 (refreshed, newTTL, err)。
+//
+// 一次原子 UPDATE 完成「校验有效期 + 续期」：
+//
+//	UPDATE user_sessions
+//	SET expires_at = now() + $TTL
+//	WHERE session_id = $sid
+//	  AND expires_at > now()                    -- 未过期
+//	  AND expires_at - now() < $threshold        -- 临近阈值
+//
+// 受影响 1 行 = 已续期；0 行 = 已过期（不续）或还没到阈值（也不续）。
+// 不需要先 SELECT，避免「读完再写」之间的并发竞态。
+//
+// best-effort：调用方按需 log + 容忍失败。当前请求已经在用这个会话做事，
+// 续期失败对当前请求没影响，下次 Touch 还会再试；把它升级为 error
+// 反而会让一次 DB 故障把整条请求变成 500，而用户什么也没做错。
+func Touch(ctx context.Context, sid string) (refreshed bool, newTTL time.Duration, err error) {
+	if sid == "" {
+		return false, 0, nil
+	}
+	now := time.Now()
+	res, err := dao.UserSession.Ctx(ctx).
+		Where("session_id", sid).
+		Where("expires_at >", now).
+		Where("expires_at <", now.Add(consts.SessionSlidingThreshold)).
+		Data(g.Map{"expires_at": now.Add(consts.SessionTTL)}).
+		Update()
+	if err != nil {
+		return false, 0, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, 0, err
+	}
+	if n == 0 {
+		return false, 0, nil
+	}
+	return true, consts.SessionTTL, nil
+}
+
 // Destroy 销毁指定会话，并吊销该用户全部 refresh_token、清空其 access_token。
 //
 // 三件事必须一起做：只删会话的话，业务方手里的 refresh_token 仍能换新

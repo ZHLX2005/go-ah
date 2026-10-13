@@ -53,7 +53,7 @@
 ### App 端（手机，fr）
 
 ```
-持：mn-rt 自签用户令牌（HS256，365 天，cid=""）+ idp_session cookie（8h）
+持：mn-rt 自签用户令牌（HS256，365 天，cid=""）+ idp_session cookie（30 天，活跃滑动）
 不持：任何 IdP access_token / refresh_token
 ```
 
@@ -105,7 +105,7 @@ try {
 实际过程：
 
 1. 旧的 mn-rt 用户令牌被服务端判定无效（401）→ 抛 RemoteTypeException
-2. `ensureGrant(force: true)` → 检查 `idp_session` 是否还活着（8h 内）
+2. `ensureGrant(force: true)` → 检查 `idp_session` 是否还活着（30 天内，活跃滑动）
 3. 如果在，App **走一遍完整的 OAuth authorize + 自动 consent**（`mintCodeForClient`），从 IdP 拿新 code，POST 给 mn-rt 服务器换新用户令牌
 4. 新令牌落盘，继续用
 

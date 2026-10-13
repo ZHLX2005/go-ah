@@ -14,12 +14,15 @@
 package response
 
 import (
+	"context"
 	"net/http"
 
+	"github.com/gogf/gf/v2/frame/g"
 	"github.com/gogf/gf/v2/net/ghttp"
 
 	"github.com/ZHLX2005/go-ah/auth-hub/internal/consts"
 	"github.com/ZHLX2005/go-ah/auth-hub/internal/logic/oidc"
+	"github.com/ZHLX2005/go-ah/auth-hub/internal/logic/session"
 )
 
 // Write 以指定状态码写出 JSON 并结束请求处理
@@ -96,6 +99,31 @@ func SetSessionCookie(r *ghttp.Request, value string, maxAge int) {
 // ClearSessionCookie 清除全局会话 Cookie（MaxAge 为负 → 浏览器立即删除）
 func ClearSessionCookie(r *ghttp.Request) {
 	SetSessionCookie(r, "", -1)
+}
+
+// RefreshSessionCookie 看门狗：DB 行剩余有效期短于 SessionSlidingThreshold 时
+// 自动续期，并把浏览器侧 cookie MaxAge 也重置到新的 SessionTTL。
+//
+// 把「DB 续期」和「cookie 续期」绑在同一函数里，是因为这两件事必须**同步**
+// 才不会出现「cookie 说会话还有效但服务端说已过期」或反过来的偏差 ——
+// 那种偏差在浏览器接口上的体感是「莫名其妙被登出 / cookie 没了但
+// 服务端还说在线」，很慢才查得清是 DB 行到期还是 cookie MaxAge 没跟上。
+//
+// best-effort：失败只记日志、不返回错误。当前请求已经在用这条会话做事，
+// 续期失败对当前请求没影响；把它冒泡上去只会让一次 DB 故障把整条请求
+// 变成 500，而用户什么也没做错。
+func RefreshSessionCookie(ctx context.Context, r *ghttp.Request, sid string) {
+	if sid == "" {
+		return
+	}
+	refreshed, newTTL, err := session.Touch(ctx, sid)
+	if err != nil {
+		g.Log().Warningf(ctx, "[auth-hub] session touch 失败: %+v sid=%s", err, sid)
+		return
+	}
+	if refreshed {
+		SetSessionCookie(r, sid, int(newTTL.Seconds()))
+	}
 }
 
 // SetQRCtxCookie 下发扫码票据的上下文 Cookie。
