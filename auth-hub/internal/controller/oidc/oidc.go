@@ -142,16 +142,26 @@ func (c *Controller) Authorize(ctx context.Context, req *v1.AuthorizeReq) error 
 	// 原始请求参数串：登录/确认完成后原样回提，避免中途丢参数
 	orig := r.Request.URL.RawQuery
 
+	// prompt=login（OIDC 标准）：强制重新认证——哪怕已有会话也回登录页，
+	// 供「同一浏览器换个人登录」用（依赖方：mn-rt 的 `auth login --new-account`）。
+	// 关键细节：return_to 里必须把 prompt 摘掉，否则登录成功后回提
+	// /oauth2/auth 又会被 prompt=login 打回登录页，死循环。
+	forceLogin := promptRequestsLogin(req.Prompt)
+	returnTo := orig
+	if forceLogin {
+		returnTo = stripQueryParam(orig, "prompt")
+	}
+
 	user, err := SessionUser(ctx, r)
 	if err != nil {
 		response.Plain(r, http.StatusInternalServerError, "查询登录态失败")
 		return nil
 	}
-	if user == nil {
-		response.Redirect(r, "/login?return_to="+urlEncode("/oauth2/auth?"+orig))
+	if user == nil || forceLogin {
+		response.Redirect(r, "/login?return_to="+urlEncode("/oauth2/auth?"+returnTo))
 		return nil
 	}
-	response.Redirect(r, "/consent?"+orig)
+	response.Redirect(r, "/consent?"+returnTo)
 	return nil
 }
 
@@ -493,6 +503,36 @@ func basicAuth(r *ghttp.Request) (clientID, clientSecret string, ok bool) {
 //
 // 只有在 redirect_uri 已通过白名单校验之后才能用 —— 否则等于
 // 把用户重定向到一个未经验证的地址。
+// promptRequestsLogin 判断 OIDC prompt 参数是否要求强制重新认证。
+// prompt 是空格分隔的列表（如 "login consent"），任一项为 login 即成立；
+// 其余取值（none / consent / select_account）暂未实现，按未携带处理。
+func promptRequestsLogin(prompt string) bool {
+	for _, p := range strings.Fields(prompt) {
+		if strings.EqualFold(p, "login") {
+			return true
+		}
+	}
+	return false
+}
+
+// stripQueryParam 从原始 query 串里摘掉某个参数（保持其余参数的相对顺序与原样编码）。
+// 刻意不用 url.Values 重编码——那会重排参数并改动转义形态，导致回提地址与
+// 用户/依赖方最初看到的不一致。找不到该参数时原样返回。
+func stripQueryParam(rawQuery, key string) string {
+	parts := strings.Split(rawQuery, "&")
+	kept := parts[:0]
+	for _, p := range parts {
+		if p == "" {
+			continue
+		}
+		if k, _, ok := strings.Cut(p, "="); ok && k == key {
+			continue
+		}
+		kept = append(kept, p)
+	}
+	return strings.Join(kept, "&")
+}
+
 func errorRedirect(r *ghttp.Request, redirectURI, state, code, desc string) {
 	response.Redirect(r, withQuery(redirectURI, map[string]string{
 		"error":             code,

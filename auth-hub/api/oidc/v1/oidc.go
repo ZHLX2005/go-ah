@@ -67,6 +67,10 @@ type AuthorizeReq struct {
 	CodeChallenge       string `json:"code_challenge"       in:"query"`
 	CodeChallengeMethod string `json:"code_challenge_method" in:"query"`
 	Nonce               string `json:"nonce"                in:"query"`
+	// Prompt OIDC 标准的 prompt 参数（空格分隔）。目前只认 login：
+	// 强制重新认证——哪怕浏览器已有会话也回登录页，供"同一浏览器换个人登录"用
+	//（依赖方示例：mn-rt 的 `auth login --new-account`）。
+	Prompt string `json:"prompt"               in:"query"`
 }
 
 // ConsentInfoReq GET /api/consent

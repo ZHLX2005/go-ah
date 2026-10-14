@@ -33,6 +33,22 @@ func New() *Controller { return &Controller{} }
 // 回到 OIDC 授权端点，继续原本被打断的授权流程
 const defaultReturnTo = "/oauth2/auth"
 
+// sanitizeReturnTo 把 return_to 限制在**站内相对路径**。
+//
+// return_to 由前端查询串带入、登录成功后原样回显给浏览器跳转——不设防的话
+// 这就是认证中心域名下的一个开放重定向（`return_to=https://evil.com/...`
+// 会拿着"登录成功"的状态把人送去任意页面，是钓鱼的标准跳板）。
+// 规则：必须以单个 "/" 开头；拒绝 "//"（协议相对地址，等于换站）与
+// "/\"（部分客户端会把反斜杠当斜杠归一化）。非法一律落回默认值，
+// 不报错——回跳地址本就是可选参数，不值得为它给用户一个错误页。
+func sanitizeReturnTo(returnTo string) string {
+	if returnTo == "" || returnTo[0] != '/' ||
+		strings.HasPrefix(returnTo, "//") || strings.HasPrefix(returnTo, "/\\") {
+		return defaultReturnTo
+	}
+	return returnTo
+}
+
 // Login POST /api/login
 //
 // 失败原因分三类且互不混淆：参数问题 400、账号不存在 401、口令错误 401。
@@ -71,11 +87,8 @@ func (c *Controller) Login(ctx context.Context, req *v1.LoginReq) error {
 	}
 	response.SetSessionCookie(r, sid, int(ttl.Seconds()))
 
-	// 登录成功后回到原 OIDC 授权流程
-	returnTo := req.ReturnTo
-	if returnTo == "" {
-		returnTo = defaultReturnTo
-	}
+	// 登录成功后回到原 OIDC 授权流程（return_to 限站内相对路径，见 sanitizeReturnTo）
+	returnTo := sanitizeReturnTo(req.ReturnTo)
 	response.Write(r, http.StatusOK, &v1.LoginRes{
 		Code: 0,
 		Data: v1.LoginData{
@@ -139,10 +152,7 @@ func (c *Controller) Register(ctx context.Context, req *v1.RegisterReq) error {
 	response.SetSessionCookie(r, sid, int(ttl.Seconds()))
 	g.Log().Infof(ctx, "[auth-hub] 邀请码注册成功: user=%s (id=%d)", u.Username, u.Id)
 
-	returnTo := req.ReturnTo
-	if returnTo == "" {
-		returnTo = defaultReturnTo
-	}
+	returnTo := sanitizeReturnTo(req.ReturnTo)
 	response.Write(r, http.StatusOK, &v1.RegisterRes{
 		Code: 0,
 		Data: v1.RegisterData{
