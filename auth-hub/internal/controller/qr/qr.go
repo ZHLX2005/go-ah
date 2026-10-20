@@ -378,7 +378,7 @@ func (c *Controller) Decode(ctx context.Context, req *v1.DecodeReq) error {
 	}
 	defer src.Close()
 
-	content, err := qr.DecodeImageFrom(src, maxDecodeImageBytes)
+	content, err := qr.DecodeImageFrom(src, qr.MaxDecodeImageBytes)
 	if err != nil {
 		code := "decode_failed"
 		if errors.Is(err, qr.ErrImageTooLarge) {
@@ -392,9 +392,6 @@ func (c *Controller) Decode(ctx context.Context, req *v1.DecodeReq) error {
 	})
 	return nil
 }
-
-// maxDecodeImageBytes 单张图片的体积上限，与 logic 层的默认值同源。
-const maxDecodeImageBytes = 8 << 20
 
 // ── 身份解析 ──────────────────────────────────────────────────────────────
 

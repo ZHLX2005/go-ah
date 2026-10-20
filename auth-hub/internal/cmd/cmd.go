@@ -20,6 +20,7 @@ import (
 	"github.com/gogf/gf/v2/os/gcmd"
 
 	"github.com/ZHLX2005/go-ah/auth-hub/internal/config"
+	"github.com/ZHLX2005/go-ah/auth-hub/internal/consts"
 	"github.com/ZHLX2005/go-ah/auth-hub/internal/db"
 	"github.com/ZHLX2005/go-ah/auth-hub/internal/logic/qr"
 	"github.com/ZHLX2005/go-ah/auth-hub/internal/logic/signing"
@@ -57,6 +58,11 @@ func run(ctx context.Context) error {
 
 	s := g.Server()
 	s.SetAddr(cfg.Addr)
+	// 传输层的 body 上限必须**大于** /api/qr/decode 自己的图片上限（8MB），
+	// 否则超大图片会先被传输层拦下、连接被直接中断，客户端拿到的是
+	// "无法连接认证中心"这种网络错误，而不是端点写好的"图片太大，请重拍"。
+	// 理由与取值见 consts.MaxRequestBodyBytes。
+	s.SetClientMaxBodySize(consts.MaxRequestBodyBytes)
 	router.Register(ctx, s, cfg.WebDist)
 
 	startJanitor(ctx)

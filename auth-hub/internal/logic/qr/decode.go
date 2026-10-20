@@ -65,7 +65,7 @@ func DecodeImage(data []byte) (string, error) {
 // 解码后能占几百 MB 内存）。在读的时候就截断，而不是先全读进来再判断。
 func DecodeImageFrom(r io.Reader, maxBytes int64) (string, error) {
 	if maxBytes <= 0 {
-		maxBytes = defaultMaxDecodeImageBytes
+		maxBytes = MaxDecodeImageBytes
 	}
 	data, err := io.ReadAll(io.LimitReader(r, maxBytes+1))
 	if err != nil {
@@ -80,8 +80,13 @@ func DecodeImageFrom(r io.Reader, maxBytes int64) (string, error) {
 // ErrImageTooLarge 是"图片超过体积上限"。
 var ErrImageTooLarge = errors.New("图片太大了")
 
-// defaultMaxDecodeImageBytes 是单张图片的体积上限（8MB）。
+// MaxDecodeImageBytes 是单张图片的体积上限（8MB）。
 //
 // 取 8MB 的依据：手机随手拍一张二维码照片（1080p JPEG）约 1–3MB，
 // 8MB 给足了余量；而 8MB 以下的图片解码后占用也在可控范围。
-const defaultMaxDecodeImageBytes = 8 << 20
+//
+// 它必须**小于** consts.MaxRequestBodyBytes（传输层的 body 上限）——
+// 否则超大请求会先被传输层拦下、连接被直接中断，端点自己的
+// ErrImageTooLarge 分支永远走不到（客户端拿到的是"网络错误"而不是
+// "图片太大，请重拍"）。这条不变式由 decode_test.go 守着。
+const MaxDecodeImageBytes = 8 << 20
