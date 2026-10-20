@@ -6,6 +6,7 @@ require (
 	github.com/gogf/gf/contrib/drivers/pgsql/v2 v2.10.3
 	github.com/gogf/gf/v2 v2.10.3
 	github.com/golang-jwt/jwt/v5 v5.2.0
+	github.com/liyue201/goqr v0.0.0-20200803022322-df443203d4ea
 	golang.org/x/crypto v0.38.0
 )
 

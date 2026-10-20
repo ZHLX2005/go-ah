@@ -189,3 +189,36 @@ type RefuseRes struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
 }
+
+// ── 手机侧：二维码图片解码（服务端解码，客户端零原生依赖）────────────────
+
+// DecodeReq POST /api/qr/decode —— 上传一张二维码照片，服务端解码出内容。
+//
+// 存在的理由：让原生 App **不必内置条码识别引擎**。ML Kit 的
+// libbarhopper_v3.so 单独就 4.2MB，再加 0.8MB 的 .tflite 模型 ——
+// 而这份体积只为读一张电脑屏幕上的登录码。改由服务端解码后，
+// 客户端退化成"拍一张照传上来"，原生侧净省约 5MB。
+//
+// 匿名可调：它不回显任何**服务端**状态，只回显"用户自己拍到的图里有什么"，
+// 没有可被探测的信息。真正的授权发生在后续的 preview / confirm
+// （那两个端点要求身份）。但图片解码是 CPU 密集的，所以按来源 IP 限流。
+//
+// 文件字段名固定为 `file`（multipart/form-data）。
+type DecodeReq struct {
+	g.Meta `path:"/api/qr/decode" method:"post" tags:"QR" summary:"解码二维码图片"`
+}
+
+// DecodeData 解码结果
+type DecodeData struct {
+	// Content 是二维码里的原始字符串（通常是含 ticket 的 URL）。
+	// 原样回显，不做解析 —— 解析成 ticket 是**客户端**的约定
+	// （见 Flutter 侧 AuthHubConfig.parseTicketFromScan），
+	// 服务端不替客户端决定"什么算一张登录码"。
+	Content string `json:"content"`
+}
+
+// DecodeRes 解码响应
+type DecodeRes struct {
+	Code int        `json:"code"`
+	Data DecodeData `json:"data"`
+}

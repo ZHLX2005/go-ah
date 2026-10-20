@@ -80,6 +80,14 @@ var (
 	// 给别人一台机器发会话），所以哪怕它已经天然被"必须先建票"约束住，
 	// 仍然单独设一道：账号被脚本驱动时，这一道是最后的刹车。
 	qrConfirmLimit = limiter.New(limiter.Spec{Capacity: 60, PerMinute: 30})
+
+	// qrDecodeLimit 二维码图片解码：按来源 IP。
+	//
+	// 这是全平台唯一一条"**匿名 + CPU 密集**"的端点（图片解码要跑识别算法），
+	// 所以必须限流。它不回显任何服务端状态，只回显调用者自己传上来的图里的
+	// 内容 —— 没有可探测的信息，但可以被当成免费的公共解码服务白嫖。
+	// 10 次/分钟、突发 20：一次扫码批准只需要 1 次。
+	qrDecodeLimit = limiter.New(limiter.Spec{Capacity: 20, PerMinute: 10})
 )
 
 // errCodeRateLimited 是对外契约里的原因码，前端与 CLI 按它分支。
@@ -338,6 +346,55 @@ func (c *Controller) Refuse(ctx context.Context, req *v1.RefuseReq) error {
 	response.Write(r, http.StatusOK, &v1.RefuseRes{Code: 0, Message: "已拒绝该登录请求"})
 	return nil
 }
+
+// ── 二维码图片解码 ────────────────────────────────────────────────────────
+
+// Decode POST /api/qr/decode —— 上传一张二维码照片，服务端解出内容。
+//
+// 匿名可调（见 api/qr/v1.DecodeReq 的说明）：它不回显任何服务端状态，
+// 只回显"调用者自己拍到的图里有什么"。真正的授权在 preview / confirm。
+// 但图片解码是 CPU 密集的，所以按来源 IP 限流，且限流放在**读文件之前** ——
+// 否则攻击者可以用超大文件把解码开销打满。
+func (c *Controller) Decode(ctx context.Context, req *v1.DecodeReq) error {
+	r := g.RequestFromCtx(ctx)
+	response.NoStore(r)
+
+	ip := r.GetClientIp()
+	if !qrDecodeLimit.Allow(ip) {
+		tooManyRequests(r, qrDecodeLimit.RetryAfter(ip), "解码过于频繁，请稍后再试")
+		return nil
+	}
+
+	f := r.GetUploadFile("file")
+	if f == nil {
+		response.BizError(r, http.StatusBadRequest, "no_file",
+			"没有收到图片文件（multipart 字段名固定为 file）")
+		return nil
+	}
+	src, err := f.Open()
+	if err != nil {
+		response.BizError(r, http.StatusBadRequest, "bad_file", "图片读取失败")
+		return nil
+	}
+	defer src.Close()
+
+	content, err := qr.DecodeImageFrom(src, maxDecodeImageBytes)
+	if err != nil {
+		code := "decode_failed"
+		if errors.Is(err, qr.ErrImageTooLarge) {
+			code = "image_too_large"
+		}
+		response.BizError(r, http.StatusBadRequest, code, err.Error())
+		return nil
+	}
+	response.Write(r, http.StatusOK, &v1.DecodeRes{
+		Code: 0, Data: v1.DecodeData{Content: content},
+	})
+	return nil
+}
+
+// maxDecodeImageBytes 单张图片的体积上限，与 logic 层的默认值同源。
+const maxDecodeImageBytes = 8 << 20
 
 // ── 身份解析 ──────────────────────────────────────────────────────────────
 

@@ -96,6 +96,10 @@ func Register(ctx context.Context, s *ghttp.Server, webDist string) {
 		group.POST("/api/qr/sessions/{ticket}/confirm", call[qrapi.ConfirmReq](qrC.Confirm))
 		group.POST("/api/qr/sessions/{ticket}/refuse", call[qrapi.RefuseReq](qrC.Refuse))
 
+		// 二维码图片解码：手机拍一张码照片传上来，服务端解出内容。
+		// 匿名可调（不回显服务端状态），按来源 IP 限流。
+		group.POST("/api/qr/decode", call[qrapi.DecodeReq](qrC.Decode))
+
 		// OIDC 协议端点
 		group.GET("/oauth2/auth", call[oidcapi.AuthorizeReq](oidcC.Authorize))
 		group.POST("/oauth2/token", call[oidcapi.TokenReq](oidcC.Token))
