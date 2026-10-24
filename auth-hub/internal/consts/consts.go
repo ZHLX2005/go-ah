@@ -83,6 +83,15 @@ const (
 	// IDTokenTTL id_token 有效期 1 小时
 	IDTokenTTL = 1 * time.Hour
 
+	// ── 过期数据保留期（janitor 清理口径）───────────────────────────────────
+	//
+	// 保留期的语义是"过期之后再留多久"：清掉的行只剩审计价值，
+	// 各表按自己的审计需求定长短，不要抄同一个数。
+	TokenPurgeAccessRetain  = 24 * time.Hour     // access_token：过期即失效，留 1 天给排查
+	TokenPurgeRefreshRetain = 7 * 24 * time.Hour // refresh_token：吊销/过期后留 7 天审计
+	TokenPurgeCodeRetain    = 7 * 24 * time.Hour // 授权码：与 QR 票据同口径
+	TokenPurgeSessionRetain = 7 * 24 * time.Hour // 全局会话：谁何时有过登录态，留 7 天
+
 	// QRTicketTTL 扫码票据有效期 2 分钟。
 	//
 	// 比授权码的 5 分钟紧得多，因为这张票据的语义是"某台浏览器正在等着登录"：

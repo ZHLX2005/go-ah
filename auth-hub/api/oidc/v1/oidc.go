@@ -118,11 +118,12 @@ type ConsentRes struct {
 // TokenReq POST /oauth2/token（表单编码，支持 Basic 客户端认证）
 type TokenReq struct {
 	g.Meta       `path:"/oauth2/token" method:"post" tags:"OIDC" summary:"令牌端点"`
-	GrantType    string `json:"grant_type"    in:"form"`
-	ClientID     string `json:"client_id"     in:"form"`
-	Code         string `json:"code"          in:"form"`
-	RedirectURI  string `json:"redirect_uri"  in:"form"`
-	CodeVerifier string `json:"code_verifier" in:"form"`
+	GrantType    string `json:"grant_type"     in:"form"`
+	ClientID     string `json:"client_id"      in:"form"`
+	ClientSecret string `json:"client_secret"  in:"form"` // client_secret_post；Basic 认证时被其覆盖
+	Code         string `json:"code"           in:"form"`
+	RedirectURI  string `json:"redirect_uri"   in:"form"`
+	CodeVerifier string `json:"code_verifier"  in:"form"`
 	RefreshToken string `json:"refresh_token" in:"form"`
 }
 

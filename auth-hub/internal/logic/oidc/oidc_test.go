@@ -321,3 +321,55 @@ func TestNewProtocolError(t *testing.T) {
 		t.Errorf("Error() = %q", pe.Error())
 	}
 }
+
+// ============================================================
+// 令牌端点客户端身份校验
+// ============================================================
+
+func boolPtr(b bool) *bool { return &b }
+
+func TestVerifyClientAuth_PublicNoop(t *testing.T) {
+	// public 客户端（含 is_public 为 nil 的历史行）：secret 缺失/多余都不校验，
+	// PKCE 才是它的身份证明。
+	for _, isPublic := range []*bool{boolPtr(true), nil} {
+		c := &entity.OAuthClient{IsPublic: isPublic}
+		if err := VerifyClientAuth(c, ""); err != nil {
+			t.Errorf("public 客户端不带 secret 应放行: %v", err)
+		}
+		if err := VerifyClientAuth(c, "whatever"); err != nil {
+			t.Errorf("public 客户端带错 secret 也应放行（没有可比对的存储）: %v", err)
+		}
+	}
+}
+
+func TestVerifyClientAuth_Confidential(t *testing.T) {
+	c := &entity.OAuthClient{IsPublic: boolPtr(false), ClientSecret: "s3cret"}
+
+	if err := VerifyClientAuth(c, "s3cret"); err != nil {
+		t.Errorf("正确 secret 应放行: %v", err)
+	}
+	for _, wrong := range []string{"", "S3cret", "s3cret "} {
+		err := VerifyClientAuth(c, wrong)
+		if err == nil {
+			t.Errorf("secret %q 不应放行", wrong)
+			continue
+		}
+		pe, ok := err.(*ProtocolError)
+		if !ok || pe.Status != 401 || pe.Code != "invalid_client" {
+			t.Errorf("secret %q 的错误形状 = %+v, 期望 401 invalid_client", wrong, err)
+		}
+	}
+}
+
+func TestVerifyClientAuth_ConfidentialNoStoredSecret(t *testing.T) {
+	// 声称机密却没配 secret：fail-closed，而不是当 public 放行
+	c := &entity.OAuthClient{IsPublic: boolPtr(false), ClientSecret: ""}
+	err := VerifyClientAuth(c, "")
+	if err == nil {
+		t.Fatal("无存储 secret 的机密客户端应拒绝（fail-closed）")
+	}
+	pe, ok := err.(*ProtocolError)
+	if !ok || pe.Code != "invalid_client" {
+		t.Errorf("错误形状 = %+v, 期望 invalid_client", err)
+	}
+}

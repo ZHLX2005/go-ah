@@ -16,6 +16,7 @@ import (
 	"encoding/base64"
 	"math/big"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/gogf/gf/v2/frame/g"
@@ -25,12 +26,21 @@ import (
 	"github.com/ZHLX2005/go-ah/auth-hub/internal/config"
 	"github.com/ZHLX2005/go-ah/auth-hub/internal/consts"
 	"github.com/ZHLX2005/go-ah/auth-hub/internal/controller/response"
+	"github.com/ZHLX2005/go-ah/auth-hub/internal/limiter"
 	"github.com/ZHLX2005/go-ah/auth-hub/internal/logic/oidc"
 	"github.com/ZHLX2005/go-ah/auth-hub/internal/logic/session"
 	"github.com/ZHLX2005/go-ah/auth-hub/internal/logic/signing"
 	"github.com/ZHLX2005/go-ah/auth-hub/internal/logic/user"
 	"github.com/ZHLX2005/go-ah/auth-hub/internal/model/entity"
 )
+
+// tokenLimit 令牌端点的进程内限流：按来源 IP。
+//
+// 放得宽（20 次/分钟、突发 60）是刻意的：业务方后台会自动续期
+// （template 系列每小时每会话一次 refresh），同一出口 IP 后面可能
+// 挂着一批正常用户。这一层要挡的是"拿 token 端点当爆破机的脚本"，
+// 不是正常续期——调窄它，最先受伤的是静默续期。
+var tokenLimit = limiter.New(limiter.Spec{Capacity: 60, PerMinute: 20})
 
 // Controller OIDC 端点控制器
 type Controller struct{}
@@ -78,6 +88,14 @@ func (c *Controller) Jwks(ctx context.Context, req *v1.JwksReq) error {
 		N:   base64.RawURLEncoding.EncodeToString(pub.N.Bytes()),
 		E:   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(pub.E)).Bytes()),
 	}}})
+	// JWKS 是全平台唯一**应该**被缓存的响应：公钥不敏感，而每个验签方
+	// 每验一枚 id_token 都要来拉一次的话，多客户端下这个端点会先于
+	// 业务端点成为热点。5 分钟足够短——密钥轮换后至多 5 分钟内全网收敛；
+	// 也足够长——把验签方的拉取频率压掉三个数量级。
+	// 注意必须**覆盖**（Set 而非 Add）：response.Write 已按协议惯例写了
+	// no-store，两道 Cache-Control 并存时中间代理各取所爱，行为不可预测。
+	r.Response.Header().Set("Cache-Control", "public, max-age=300")
+	r.Response.Header().Del("Pragma")
 	return nil
 }
 
@@ -267,14 +285,28 @@ func (c *Controller) Consent(ctx context.Context, req *v1.ConsentReq) error {
 func (c *Controller) Token(ctx context.Context, req *v1.TokenReq) error {
 	r := g.RequestFromCtx(ctx)
 
-	// 读取顺序与历史实现一致：表单主，query 兜底，Basic 认证覆盖
+	// 进协议之前先过限流：token 端点曾被完全没有防护（连进程内的一层都没有），
+	// 而它接受任意 client_id 的 POST——是刷库与爆破 refresh_token 的天然入口。
+	// 口径与 QR 端点一致：进程内令牌桶，按来源 IP。
+	if !tokenLimit.Allow(r.GetClientIp()) {
+		r.Response.Header().Set("Retry-After", strconv.Itoa(tokenLimit.RetryAfter(r.GetClientIp())))
+		response.ProtocolError(r, oidc.NewProtocolError(http.StatusTooManyRequests,
+			"rate_limited", "请求过于频繁，请稍后再试"))
+		return nil
+	}
+
+	// 读取顺序与历史实现一致：表单主，query 兜底，Basic 认证覆盖。
+	// secret 的取法：Basic 里带了就用 Basic 的，否则用表单的
+	// （client_secret_basic 与 client_secret_post 两条路，不要求并存）。
 	grantType := req.GrantType
 	clientID := req.ClientID
 	if clientID == "" {
 		clientID = r.GetQuery("client_id").String()
 	}
-	if u, _, ok := basicAuth(r); ok {
+	clientSecret := req.ClientSecret
+	if u, pw, ok := basicAuth(r); ok {
 		clientID = u
+		clientSecret = pw
 	}
 
 	client, err := oidc.FindClient(ctx, clientID)
@@ -284,6 +316,20 @@ func (c *Controller) Token(ctx context.Context, req *v1.TokenReq) error {
 	if client == nil {
 		response.ProtocolError(r, oidc.NewProtocolError(http.StatusUnauthorized, "invalid_client", "未知的 client_id"))
 		return nil
+	}
+	// 禁用的客户端连令牌也不该换——授权端点早就拒绝了它，
+	// 这里放行等于"前门上锁、后门敞开"。
+	if !client.IsEnabled() {
+		response.ProtocolError(r, oidc.NewProtocolError(http.StatusUnauthorized, "invalid_client", "该客户端已被禁用"))
+		return nil
+	}
+	// 机密客户端身份校验（public 客户端在此函数内是 no-op，见其注释）。
+	if err := oidc.VerifyClientAuth(client, clientSecret); err != nil {
+		if pe, ok := err.(*oidc.ProtocolError); ok {
+			response.ProtocolError(r, pe)
+			return nil
+		}
+		return err
 	}
 
 	switch grantType {
@@ -318,7 +364,7 @@ func (c *Controller) handleAuthCodeGrant(
 		return nil
 	}
 
-	set, err := oidc.IssueTokenSet(ctx, client.ClientID, user, ac.Scope, ac.Nonce)
+	set, err := oidc.IssueTokenSet(ctx, client.ClientID, user, ac.Scope, ac.Nonce, ac.Id)
 	if err != nil {
 		return err
 	}

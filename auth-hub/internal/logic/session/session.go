@@ -162,3 +162,14 @@ func DestroyAllForUser(ctx context.Context, userID int64) error {
 	_, err := dao.UserSession.Ctx(ctx).Where("user_id", userID).Delete()
 	return err
 }
+
+// PurgeExpired 删除过期已超过保留期的会话行。
+//
+// 曾经这张表没有任何清理（consts.SessionTTL 的注释自认"已知遗留"）：
+// 行只在登录时增长、单行寿命 30 天，慢到没人看见它涨——但它是
+// user_sessions 表，一次会话一行，注册用户数 × 年登录次数线性堆下去，
+// 配上 30 天 TTL 的拉长，积压只会越来越明显。
+func PurgeExpired(ctx context.Context) (int64, error) {
+	return db.DeleteOlderThan(ctx, consts.TableUserSession,
+		time.Now().Add(-consts.TokenPurgeSessionRetain))
+}

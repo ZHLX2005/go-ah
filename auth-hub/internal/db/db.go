@@ -60,6 +60,24 @@ func Instance() gdb.DB {
 // SetInstance 注入实例（测试用：把整棵树指向一次性 schema）
 func SetInstance(db gdb.DB) { instance = db }
 
+// IsLoopbackDSN 判断 DSN 指向的是不是本机开发库。
+//
+// 用途是管理员默认口令的启动闸门（见 cmd）：指向非本机的库却还揣着
+// 公开仓库里的默认口令，是"忘了配 IDP_ADMIN_PASSWORD 就上生产"——
+// 那等于把发邀请码的权限根挂在公网上。解析失败按"非回环"处理：
+// 拿不准的场景应该过闸门，而不是被放过。
+func IsLoopbackDSN(raw string) bool {
+	node, _, err := ParseDSN(raw)
+	if err != nil {
+		return false
+	}
+	switch strings.ToLower(node.Host) {
+	case "127.0.0.1", "localhost", "::1":
+		return true
+	}
+	return false
+}
+
 // ScanOne 把单行查询结果扫进 dest；**零行不是错误**，用 found 表示是否命中。
 //
 // 为什么要包一层：gdb 的 Model.Scan（经 Record.Struct）在零行时返回

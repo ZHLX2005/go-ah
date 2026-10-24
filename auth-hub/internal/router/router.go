@@ -27,6 +27,7 @@ import (
 	oidcctrl "github.com/ZHLX2005/go-ah/auth-hub/internal/controller/oidc"
 	qrctrl "github.com/ZHLX2005/go-ah/auth-hub/internal/controller/qr"
 	"github.com/ZHLX2005/go-ah/auth-hub/internal/controller/response"
+	"github.com/ZHLX2005/go-ah/auth-hub/internal/db"
 	"github.com/ZHLX2005/go-ah/auth-hub/internal/middleware"
 )
 
@@ -37,6 +38,20 @@ func Register(ctx context.Context, s *ghttp.Server, webDist string) {
 	authC := authctrl.New()
 	adminC := adminctrl.New()
 	qrC := qrctrl.New()
+
+	// /healthz 探活端点：多副本部署的前置条件（LB/K8s 没有它就只能拿业务
+	// 端点当探针，探到 200 也说明不了 DB 是否还活着）。
+	// liveness 与 readiness 合一：DB 不可达时返回 503，编排系统会把
+	// 流量摘走而不是把请求扔给一个只会 500 的进程。
+	s.BindHandler("/healthz", func(r *ghttp.Request) {
+		if err := db.Instance().PingMaster(); err != nil {
+			response.Write(r, http.StatusServiceUnavailable, map[string]interface{}{
+				"status": "db_unreachable",
+			})
+			return
+		}
+		response.Write(r, http.StatusOK, map[string]interface{}{"status": "ok"})
+	})
 
 	// ── 公开端点：OIDC 协议 + 认证入口 + 授权确认页数据 ──────────────────────
 	s.Group("/", func(group *ghttp.RouterGroup) {

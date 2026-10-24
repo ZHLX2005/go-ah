@@ -12,6 +12,7 @@ package oidc
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
 	"net/http"
@@ -204,6 +205,36 @@ func FindClient(ctx context.Context, clientID string) (*entity.OAuthClient, erro
 	return &c, nil
 }
 
+// VerifyClientAuth 校验令牌端点的客户端身份。
+//
+// 规则按 token_endpoint_auth_method 语义收口：
+//   - public 客户端（is_public=true，即 method=none）：不要求 secret，
+//     带了也不比对——它没有可比对的东西。PKCE 才是它的身份证明。
+//   - confidential 客户端：必须携带 secret 且与库中一致（常数时间比较）。
+//     库里没存 secret 视为配置残缺，按拒绝处理（fail-closed）：
+//     一个"声称机密却没配密钥"的客户端，放行等于把机密当公共用。
+//
+// 历史包袱说明：本端点曾长期不校验 secret（发现文档却声明支持
+// client_secret_post/basic）。线上已有接入方全部注册为 public 客户端，
+// 因此本函数对它们是 no-op；真正受影响的只有管理后台手工创建的
+// confidential 客户端——它们上线时从没被要求发过 secret，切换到强制
+// 校验的那一刻会在下次续期时收到 401 invalid_client，需要先配好
+// OIDC_CLIENT_SECRET 再升级（见 docs 的迁移说明）。
+func VerifyClientAuth(client *entity.OAuthClient, clientSecret string) error {
+	if client.IsPublicClient() {
+		return nil
+	}
+	if client.ClientSecret == "" {
+		return NewProtocolError(http.StatusUnauthorized, "invalid_client",
+			"机密客户端未配置 client_secret（请联系管理员重新下发）")
+	}
+	if clientSecret == "" ||
+		subtle.ConstantTimeCompare([]byte(clientSecret), []byte(client.ClientSecret)) != 1 {
+		return NewProtocolError(http.StatusUnauthorized, "invalid_client", "客户端认证失败")
+	}
+	return nil
+}
+
 // ── 授权码 ──────────────────────────────────────────────────────────────────
 
 // AuthCodeInput 生成授权码所需的上下文
@@ -243,6 +274,15 @@ func CreateAuthorizationCode(ctx context.Context, in AuthCodeInput) (string, err
 // 校验顺序不可打乱：不匹配/不存在这类"确定性拒绝"放前面，
 // 用的是同一个 invalid_grant 错误码但原因各不相同 —— 排查时
 // 原因文本就是唯一线索，不能糊成一个"授权失败"。
+//
+// 一次性消费用**条件 UPDATE 抢占**（WHERE used_at IS NULL），不是读后写：
+// 同一个 code 的两次并发兑换会双双通过 SELECT 校验，但只有一次 UPDATE
+// 能抢到 affected=1，另一次进入重放分支。曾经这里是"先读再无条件 UPDATE"，
+// 并发重放会各自签出一套令牌——单实例低并发下测试永远全绿，
+// 恰恰是攻击者最会利用的窗口（口径同 logic/qr 对票据迁移的纪律）。
+//
+// 重放分支按 RFC 6749 §4.1.2 吊销该 code 已签发的全部令牌：
+// 重放本身就是凭据泄露的信号，此时"保留已发令牌"没有任何正当场景。
 func ConsumeAuthorizationCode(
 	ctx context.Context, code, clientID, redirectURI, verifier string,
 ) (*entity.OAuthAuthorizationCode, error) {
@@ -257,27 +297,68 @@ func ConsumeAuthorizationCode(
 	if ac.ClientID != clientID || ac.RedirectURI != redirectURI {
 		return nil, errInvalidGrant("client/redirect_uri 不匹配")
 	}
-	if ac.UsedAt != nil {
-		return nil, errInvalidGrant("code 已被使用")
-	}
 	if time.Now().After(ac.ExpiresAt) {
 		return nil, errInvalidGrant("code 已过期")
 	}
 	if !VerifyPKCE(verifier, ac.CodeChallenge, ac.CodeChallengeMethod) {
 		return nil, errInvalidGrant("PKCE 校验失败")
 	}
+	// 顺带的确定性拒绝：非并发的重放直接在这里暴露（SELECT 已见 used_at 非空），
+	// 与抢占失败走同一条吊销路径，行为不分先后。
+	if ac.UsedAt != nil {
+		if rerr := revokeTokensForCode(ctx, ac.Id); rerr != nil {
+			return nil, rerr
+		}
+		return nil, errInvalidGrant("code 已被使用")
+	}
 
-	// 标记一次性使用：必须在签发令牌之前落库，
-	// 否则并发复用同一个 code 会各自签出一套令牌。
+	// 抢占：必须放在所有校验之后——PKCE 失败的请求不该烧掉这张 code
+	// （攻击者拿不到 verifier，但也不该让他用错误 verifier 把合法者的 code 打废）。
 	now := time.Now()
-	if _, err := dao.OAuthAuthorizationCode.Ctx(ctx).
+	res, err := dao.OAuthAuthorizationCode.Ctx(ctx).
 		Where("id", ac.Id).
+		Where("used_at IS NULL").
 		Data(g.Map{"used_at": now}).
-		Update(); err != nil {
+		Update()
+	if err != nil {
 		return nil, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if n == 0 {
+		// 并发重放：校验全部通过，但另一个请求先抢到了。
+		if rerr := revokeTokensForCode(ctx, ac.Id); rerr != nil {
+			return nil, rerr
+		}
+		return nil, errInvalidGrant("code 已被使用")
 	}
 	ac.UsedAt = &now
 	return &ac, nil
+}
+
+// revokeTokensForCode 吊销某授权码签发过的全部令牌（code 重放的对策）。
+//
+// 吊销失败会连同本次兑换一起失败：与其"记了重放却放任令牌存活"，
+// 不如让调用方收到错误重试——重放检测漏一次的代价是令牌多活一段，
+// 而静默漏掉的代价是"重放对策存在但不生效"这种错觉。
+func revokeTokensForCode(ctx context.Context, codeID int64) error {
+	now := time.Now()
+	if _, err := dao.OAuthRefreshToken.Ctx(ctx).
+		Where("authorization_code_id", codeID).
+		Where("revoked_at IS NULL").
+		Data(g.Map{"revoked_at": now}).
+		Update(); err != nil {
+		return err
+	}
+	if _, err := dao.OAuthAccessToken.Ctx(ctx).
+		Where("authorization_code_id", codeID).
+		Delete(); err != nil {
+		return err
+	}
+	g.Log().Warningf(ctx, "[auth-hub] 授权码被重放，已吊销其签发的令牌: code_row=%d", codeID)
+	return nil
 }
 
 // ── 令牌集 ──────────────────────────────────────────────────────────────────
@@ -291,8 +372,11 @@ type TokenSet struct {
 	ExpiresIn    int
 }
 
-// IssueTokenSet 为授权码流程签发一整套令牌
-func IssueTokenSet(ctx context.Context, clientID string, user *entity.User, scope, nonce string) (*TokenSet, error) {
+// IssueTokenSet 为授权码流程签发一整套令牌。
+//
+// codeID 是签发来源的授权码行 id：重放检测要按它精确吊销（见
+// revokeTokensForCode），没有它就只能"code 被重放了但不知道该吊销谁"。
+func IssueTokenSet(ctx context.Context, clientID string, user *entity.User, scope, nonce string, codeID int64) (*TokenSet, error) {
 	idToken, err := signing.IDToken(ctx, user, clientID, nonce, scope)
 	if err != nil {
 		return nil, err
@@ -302,22 +386,24 @@ func IssueTokenSet(ctx context.Context, clientID string, user *entity.User, scop
 	now := time.Now()
 
 	if _, err := dao.OAuthAccessToken.Ctx(ctx).Data(g.Map{
-		"token":      accessToken,
-		"client_id":  clientID,
-		"user_id":    user.Id,
-		"scope":      scope,
-		"expires_at": now.Add(consts.AccessTokenTTL),
-		"created_at": now,
+		"token":                 accessToken,
+		"client_id":             clientID,
+		"user_id":               user.Id,
+		"scope":                 scope,
+		"expires_at":            now.Add(consts.AccessTokenTTL),
+		"created_at":            now,
+		"authorization_code_id": codeID,
 	}).Insert(); err != nil {
 		return nil, err
 	}
 	if _, err := dao.OAuthRefreshToken.Ctx(ctx).Data(g.Map{
-		"token":      refreshToken,
-		"client_id":  clientID,
-		"user_id":    user.Id,
-		"scope":      scope,
-		"expires_at": now.Add(consts.RefreshTokenTTL),
-		"created_at": now,
+		"token":                 refreshToken,
+		"client_id":             clientID,
+		"user_id":               user.Id,
+		"scope":                 scope,
+		"expires_at":            now.Add(consts.RefreshTokenTTL),
+		"created_at":            now,
+		"authorization_code_id": codeID,
 	}).Insert(); err != nil {
 		return nil, err
 	}
@@ -469,3 +555,34 @@ func UserInfo(ctx context.Context, accessToken string) (*UserInfoResult, error) 
 
 // Sub 用户 ID 对应的 OIDC sub
 func Sub(userID int64) string { return fmt.Sprintf("%d", userID) }
+
+// ── 过期清理（janitor 调度）──────────────────────────────────────────────────
+
+// PurgeExpiredAuthCodes 删除过期已超过保留期的授权码行。
+//
+// 授权码行只在登录时产生（一张一行、5 分钟 TTL），量级天然小，
+// 但从不清理依然无限累积；保留 7 天与 QR 票据同口径——
+// "这次登录发生在什么时候"是它唯一的审计价值。
+func PurgeExpiredAuthCodes(ctx context.Context) (int64, error) {
+	return db.DeleteOlderThan(ctx, consts.TableOAuthAuthorizationCode,
+		time.Now().Add(-consts.TokenPurgeCodeRetain))
+}
+
+// PurgeExpiredAccessTokens 删除已过期的 access_token 行。
+//
+// 这是全平台**积压速度最快**的表：每 10 分钟 TTL 一行，业务方后台续期
+// 还会持续放大。它也是清理任务存在的首要理由——没有这一条，
+// 库会先于任何水平扩展问题被撑爆。
+func PurgeExpiredAccessTokens(ctx context.Context) (int64, error) {
+	return db.DeleteOlderThan(ctx, consts.TableOAuthAccessToken,
+		time.Now().Add(-consts.TokenPurgeAccessRetain))
+}
+
+// PurgeGoneRefreshTokens 删除过期/吊销已超过保留期的 refresh_token 行。
+//
+// 吊销行与过期行同等清理：revoked_at 只是"令牌死了"的另一种死法，
+// 死了的令牌不留 7 天以上的尸位。
+func PurgeGoneRefreshTokens(ctx context.Context) (int64, error) {
+	cutoff := time.Now().Add(-consts.TokenPurgeRefreshRetain)
+	return db.DeleteRefreshTokensGone(ctx, cutoff, cutoff)
+}

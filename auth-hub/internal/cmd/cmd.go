@@ -14,6 +14,7 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/gogf/gf/v2/frame/g"
@@ -22,7 +23,9 @@ import (
 	"github.com/ZHLX2005/go-ah/auth-hub/internal/config"
 	"github.com/ZHLX2005/go-ah/auth-hub/internal/consts"
 	"github.com/ZHLX2005/go-ah/auth-hub/internal/db"
+	"github.com/ZHLX2005/go-ah/auth-hub/internal/logic/oidc"
 	"github.com/ZHLX2005/go-ah/auth-hub/internal/logic/qr"
+	"github.com/ZHLX2005/go-ah/auth-hub/internal/logic/session"
 	"github.com/ZHLX2005/go-ah/auth-hub/internal/logic/signing"
 	"github.com/ZHLX2005/go-ah/auth-hub/internal/router"
 )
@@ -39,6 +42,16 @@ var Main = gcmd.Command{
 
 func run(ctx context.Context) error {
 	cfg := config.Load(ctx)
+
+	// 管理员默认口令闸门：默认口令写在公开仓库里（consts.SeedAdminPassword），
+	// 指向非本机的库还用它，等于把全平台的权限根（唯一管理员，能发邀请码）
+	// 交给任何读过这个仓库的人。"注释里提醒部署必须覆盖"挡不住忘配 env，
+	// 只有启动失败挡得住。本机开发库（127.0.0.1/localhost）不受影响。
+	if !db.IsLoopbackDSN(cfg.DSN) && cfg.AdminPassword == consts.SeedAdminPassword {
+		return fmt.Errorf(
+			"IDP_ADMIN_PASSWORD 仍是公开的默认值，拒绝连接非本机数据库启动；" +
+				"请在环境中设置真实口令（管理员已存在时该值仅用于 seed 新库，不会覆盖现有口令）")
+	}
 
 	if err := db.Init(ctx, db.InitOptions{
 		DSN:                cfg.DSN,
@@ -82,28 +95,43 @@ const janitorInterval = time.Hour
 // startJanitor 启动过期数据清理。
 //
 // 为什么必须有它，而且为什么是从这里开始而不是"以后再说"：
-// 本服务此前**完全没有**清理任务（user_sessions 的过期行一直堆着），
-// 这在旧表上勉强说得过去 —— 它们只在登录时增长，一行能撑很久。
-// 但 qr_login_sessions 是**匿名可写**的：一个脚本不登录就能往里灌行，
-// 而且绝大多数行是失败的（没扫、没批、换码）。不给它配清理，
-// 等于给认证中心加了一个"谁都能写、没人负责删"的表 —— 那是要出事故的。
+// 本服务此前**完全没有**清理任务，只有 QR 票据表配了清理。
+// 但 o_auth_access_tokens 是每 10 分钟 TTL 一行、业务方后台续期
+// 还会持续放大的表——它才是第一个会把库撑爆的（线性堆积、无上限）。
+// 授权码 / refresh_token / user_sessions 同理，只是慢一些。
 //
-// 口径与 template-business-server 的 DeleteExpiredSessions 一致（那边已有先例）；
-// 顺手把老表一起清了，是因为只清一张表会留下"以为都清了"的错觉。
+// 口径与 template-business-server 的 DeleteExpiredSessions 一致；
+// 保留期定义在 consts（TokenPurge*），各表按审计需求长短不一。
 func startJanitor(ctx context.Context) {
 	sweep := func() {
 		// 用独立的 context：清理发生在服务运行期，不能继承请求的取消信号；
 		// 但要把 ctx 的值（trace id 等）带过去，所以走 WithoutCancel 而不是 Background。
 		c := context.WithoutCancel(ctx)
-		n, err := qr.Purge(c)
-		if err != nil {
-			// 清理失败绝不影响对外服务：它丢的是未来的可查性，不是当前的可用性。
-			// 但必须喊出来，否则会静默堆成一张几百万行的表，等到某天查询变慢才发现。
-			g.Log().Errorf(c, "[auth-hub] 清理过期扫码票据失败: %v", err)
-			return
+
+		// 顺序无关紧要，但把 QR 放最前：它是唯一"匿名可写"的表，
+		// 灌入速率不受登录人数约束。
+		type purgeJob struct {
+			name string
+			fn   func(context.Context) (int64, error)
 		}
-		if n > 0 {
-			g.Log().Infof(c, "[auth-hub] 已清理过期扫码票据 %d 行", n)
+		jobs := []purgeJob{
+			{"扫码票据", func(c context.Context) (int64, error) { return qr.Purge(c) }},
+			{"access_token", oidc.PurgeExpiredAccessTokens},
+			{"refresh_token", oidc.PurgeGoneRefreshTokens},
+			{"授权码", oidc.PurgeExpiredAuthCodes},
+			{"全局会话", session.PurgeExpired},
+		}
+		for _, job := range jobs {
+			n, err := job.fn(c)
+			if err != nil {
+				// 清理失败绝不影响对外服务：它丢的是未来的可查性，不是当前的可用性。
+				// 但必须喊出来，否则会静默堆成一张几百万行的表，等到某天查询变慢才发现。
+				g.Log().Errorf(c, "[auth-hub] 清理过期%s失败: %v", job.name, err)
+				continue
+			}
+			if n > 0 {
+				g.Log().Infof(c, "[auth-hub] 已清理过期%s %d 行", job.name, n)
+			}
 		}
 	}
 

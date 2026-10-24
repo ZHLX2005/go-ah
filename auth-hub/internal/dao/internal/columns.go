@@ -82,14 +82,15 @@ func OAuthAuthorizationCodeColumnsOf() OAuthAuthorizationCodeColumns {
 
 // OAuthRefreshTokenColumns o_auth_refresh_tokens 表列名
 type OAuthRefreshTokenColumns struct {
-	Id        string
-	Token     string
-	ClientID  string
-	UserID    string
-	Scope     string
-	ExpiresAt string
-	RevokedAt string
-	CreatedAt string
+	Id                  string
+	Token               string
+	ClientID            string
+	UserID              string
+	Scope               string
+	ExpiresAt           string
+	RevokedAt           string
+	AuthorizationCodeId string
+	CreatedAt           string
 }
 
 // OAuthRefreshTokenColumnsOf 返回 o_auth_refresh_tokens 表的列名集合
@@ -97,18 +98,20 @@ func OAuthRefreshTokenColumnsOf() OAuthRefreshTokenColumns {
 	return OAuthRefreshTokenColumns{
 		Id: "id", Token: "token", ClientID: "client_id", UserID: "user_id",
 		Scope: "scope", ExpiresAt: "expires_at", RevokedAt: "revoked_at", CreatedAt: "created_at",
+		AuthorizationCodeId: "authorization_code_id",
 	}
 }
 
 // OAuthAccessTokenColumns o_auth_access_tokens 表列名
 type OAuthAccessTokenColumns struct {
-	Id        string
-	Token     string
-	ClientID  string
-	UserID    string
-	Scope     string
-	ExpiresAt string
-	CreatedAt string
+	Id                  string
+	Token               string
+	ClientID            string
+	UserID              string
+	Scope               string
+	ExpiresAt           string
+	AuthorizationCodeId string
+	CreatedAt           string
 }
 
 // OAuthAccessTokenColumnsOf 返回 o_auth_access_tokens 表的列名集合
@@ -116,6 +119,7 @@ func OAuthAccessTokenColumnsOf() OAuthAccessTokenColumns {
 	return OAuthAccessTokenColumns{
 		Id: "id", Token: "token", ClientID: "client_id", UserID: "user_id",
 		Scope: "scope", ExpiresAt: "expires_at", CreatedAt: "created_at",
+		AuthorizationCodeId: "authorization_code_id",
 	}
 }
 

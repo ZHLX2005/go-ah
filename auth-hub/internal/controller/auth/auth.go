@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/gogf/gf/v2/frame/g"
@@ -17,6 +18,7 @@ import (
 	v1 "github.com/ZHLX2005/go-ah/auth-hub/api/auth/v1"
 	"github.com/ZHLX2005/go-ah/auth-hub/internal/consts"
 	"github.com/ZHLX2005/go-ah/auth-hub/internal/controller/response"
+	"github.com/ZHLX2005/go-ah/auth-hub/internal/limiter"
 	"github.com/ZHLX2005/go-ah/auth-hub/internal/logic/invite"
 	"github.com/ZHLX2005/go-ah/auth-hub/internal/logic/session"
 	"github.com/ZHLX2005/go-ah/auth-hub/internal/logic/user"
@@ -28,6 +30,29 @@ type Controller struct{}
 
 // New 构造控制器
 func New() *Controller { return &Controller{} }
+
+// ── 限流（口径与 QR 端点一致：进程内令牌桶，按来源 IP）─────────────────────
+var (
+	// loginLimit 口令登录。5 次/分钟、突发 10：
+	// 正常人一分钟内输错五次密码已经是极限，脚本则毫无成本——
+	// 这里要挡的就是后者。曾经登录端点**完全没有**限流，
+	// 口令可以被无限速地爆破。
+	loginLimit = limiter.New(limiter.Spec{Capacity: 10, PerMinute: 5})
+
+	// registerLimit 自助注册。3 次/分钟、突发 6：
+	// 注册消耗邀请码尝试与 users 表行数，两条都是真实的成本；
+	// 邀请码本身有 96 bit 熵，枚举不可行，限流挡的是灌行。
+	registerLimit = limiter.New(limiter.Spec{Capacity: 6, PerMinute: 3})
+)
+
+// errCodeRateLimited 与 QR 端点共用同一原因码，前端按同一分支处理。
+const errCodeRateLimited = "rate_limited"
+
+// tooManyRequests 429 + Retry-After（形状同 controller/qr 的同名 helper）。
+func tooManyRequests(r *ghttp.Request, retryAfter int, msg string) {
+	r.Response.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+	response.BizError(r, http.StatusTooManyRequests, errCodeRateLimited, msg)
+}
 
 // defaultReturnTo 登录/注册成功后没有指定回跳时的落点：
 // 回到 OIDC 授权端点，继续原本被打断的授权流程
@@ -65,10 +90,23 @@ func (c *Controller) Login(ctx context.Context, req *v1.LoginReq) error {
 		return nil
 	}
 
+	// 限流放在参数检查之后、碰数据库之前：连空参数都先挡掉，
+	// 别让被拒的请求也消耗一次 Authenticate 的查库与 argon2 计算。
+	if !loginLimit.Allow(r.GetClientIp()) {
+		tooManyRequests(r, loginLimit.RetryAfter(r.GetClientIp()), "尝试过于频繁，请稍后再试")
+		return nil
+	}
+
 	u, err := user.Authenticate(ctx, req.Username, req.Password)
 	if err != nil {
 		if ae, ok := err.(*user.AuthError); ok {
-			response.BizError(r, http.StatusUnauthorized, ae.ErrorCode, ae.Message)
+			// 对外一律 invalid_credentials：区分"账号不存在"与"密码错误"
+			// 是账号枚举预言机（配合无成本重试，等于替攻击者筛有效账号名）。
+			// 真实原因进日志——运维排查"为什么登不上"仍有一手依据，
+			// 而日志不回给发起请求的那一方。
+			g.Log().Warningf(ctx, "[auth-hub] 登录失败: login=%s reason=%s ip=%s",
+				req.Username, ae.ErrorCode, r.GetClientIp())
+			response.BizError(r, http.StatusUnauthorized, "invalid_credentials", "账号或密码错误")
 			return nil
 		}
 		return err
@@ -119,6 +157,11 @@ func (c *Controller) Register(ctx context.Context, req *v1.RegisterReq) error {
 	// 有人会把它当成普通注册端点直接 POST 账号密码。
 	if code == "" {
 		response.BizError(r, http.StatusBadRequest, invite.CodeNotFound, "邀请码不能为空")
+		return nil
+	}
+	// 限流同 Login：注册是匿名可写的入口，先挡脚本再谈业务校验。
+	if !registerLimit.Allow(r.GetClientIp()) {
+		tooManyRequests(r, registerLimit.RetryAfter(r.GetClientIp()), "尝试过于频繁，请稍后再试")
 		return nil
 	}
 	if err := user.ValidateNewAccount(username, req.Password, email); err != nil {

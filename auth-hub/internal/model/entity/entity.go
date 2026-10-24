@@ -76,6 +76,9 @@ type OAuthRefreshToken struct {
 	ExpiresAt time.Time  `json:"expires_at" description:"过期时间"`
 	RevokedAt *time.Time `json:"revoked_at" description:"吊销时间（非空即已吊销）"`
 	CreatedAt time.Time  `json:"created_at" description:"创建时间"`
+	// AuthorizationCodeId 签发本令牌的授权码行 id；nil 表示 refresh 换发（无对应 code）。
+	// 用途唯一：code 被重放时按它精确吊销（RFC 6749 §4.1.2）。
+	AuthorizationCodeId *int64 `json:"authorization_code_id" description:"签发来源授权码 id"`
 }
 
 // OAuthAccessToken 访问令牌（供 /oauth2/userinfo 的 Bearer 鉴权）
@@ -87,6 +90,8 @@ type OAuthAccessToken struct {
 	Scope     string    `json:"scope"      description:"授权范围"`
 	ExpiresAt time.Time `json:"expires_at" description:"过期时间"`
 	CreatedAt time.Time `json:"created_at" description:"创建时间"`
+	// AuthorizationCodeId 同 OAuthRefreshToken.AuthorizationCodeId
+	AuthorizationCodeId *int64 `json:"authorization_code_id" description:"签发来源授权码 id"`
 }
 
 // UserSession 全局登录会话（IdP 侧 SSO 会话）

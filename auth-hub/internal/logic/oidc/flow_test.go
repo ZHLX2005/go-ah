@@ -221,7 +221,7 @@ func TestAuthorizationCode_UsedMarkedBeforeIssue(t *testing.T) {
 func TestIssueTokenSet_AndUserInfo(t *testing.T) {
 	ctx, u := setup(t)
 
-	set, err := oidc.IssueTokenSet(ctx, consts.ClientGSAC, u, "openid profile email", "nonce-42")
+	set, err := oidc.IssueTokenSet(ctx, consts.ClientGSAC, u, "openid profile email", "nonce-42", 0)
 	if err != nil {
 		t.Fatalf("签发令牌失败: %v", err)
 	}
@@ -261,7 +261,7 @@ func TestIssueTokenSet_AndUserInfo(t *testing.T) {
 func TestRefreshToken_NoRotation(t *testing.T) {
 	ctx, u := setup(t)
 
-	set, err := oidc.IssueTokenSet(ctx, consts.ClientGSAC, u, "openid", "")
+	set, err := oidc.IssueTokenSet(ctx, consts.ClientGSAC, u, "openid", "", 0)
 	if err != nil {
 		t.Fatalf("签发失败: %v", err)
 	}
@@ -290,7 +290,7 @@ func TestRefreshToken_NoRotation(t *testing.T) {
 func TestRefreshToken_ClientMismatch(t *testing.T) {
 	ctx, u := setup(t)
 
-	set, err := oidc.IssueTokenSet(ctx, consts.ClientGSAC, u, "openid", "")
+	set, err := oidc.IssueTokenSet(ctx, consts.ClientGSAC, u, "openid", "", 0)
 	if err != nil {
 		t.Fatalf("签发失败: %v", err)
 	}
@@ -302,7 +302,7 @@ func TestRefreshToken_ClientMismatch(t *testing.T) {
 func TestRefreshToken_Revocation(t *testing.T) {
 	ctx, u := setup(t)
 
-	set, err := oidc.IssueTokenSet(ctx, consts.ClientGSAC, u, "openid", "")
+	set, err := oidc.IssueTokenSet(ctx, consts.ClientGSAC, u, "openid", "", 0)
 	if err != nil {
 		t.Fatalf("签发失败: %v", err)
 	}
@@ -341,7 +341,7 @@ func TestRefreshToken_Revocation(t *testing.T) {
 func TestRefreshToken_Expired(t *testing.T) {
 	ctx, u := setup(t)
 
-	set, err := oidc.IssueTokenSet(ctx, consts.ClientGSAC, u, "openid", "")
+	set, err := oidc.IssueTokenSet(ctx, consts.ClientGSAC, u, "openid", "", 0)
 	if err != nil {
 		t.Fatalf("签发失败: %v", err)
 	}
@@ -445,7 +445,7 @@ func TestSession_Destroy_RevokesEverything(t *testing.T) {
 	if err != nil {
 		t.Fatalf("创建会话失败: %v", err)
 	}
-	set, err := oidc.IssueTokenSet(ctx, consts.ClientGSAC, u, "openid", "")
+	set, err := oidc.IssueTokenSet(ctx, consts.ClientGSAC, u, "openid", "", 0)
 	if err != nil {
 		t.Fatalf("签发令牌失败: %v", err)
 	}
@@ -465,5 +465,63 @@ func TestSession_Destroy_RevokesEverything(t *testing.T) {
 	// access_token 被清空
 	if _, err := oidc.UserInfo(ctx, set.AccessToken); err == nil {
 		t.Error("登出后 access_token 仍可用")
+	}
+}
+
+// TestAuthorizationCode_ReplayRevokesTokens 重放检测必须吊销该 code 已签发的令牌
+// （RFC 6749 §4.1.2）：code 被重放本身就是凭据泄露信号，
+// 此前签出的 access/refresh token 不能继续存活。
+func TestAuthorizationCode_ReplayRevokesTokens(t *testing.T) {
+	ctx, u := setup(t)
+	code := newCode(t, ctx, u)
+
+	ac, err := oidc.ConsumeAuthorizationCode(ctx, code, consts.ClientGSAC, testRedirect, testVerifier)
+	if err != nil {
+		t.Fatalf("首次消费应成功: %v", err)
+	}
+
+	// 用该 code 签发一整套令牌（code_id 溯源在此写入）
+	set, err := oidc.IssueTokenSet(ctx, consts.ClientGSAC, u, ac.Scope, ac.Nonce, ac.Id)
+	if err != nil {
+		t.Fatalf("签发令牌失败: %v", err)
+	}
+
+	// 重放同一个 code：必须失败
+	if _, err := oidc.ConsumeAuthorizationCode(ctx, code, consts.ClientGSAC, testRedirect, testVerifier); err == nil {
+		t.Fatal("重放授权码必须被拒绝")
+	}
+
+	// refresh_token 应已被吊销
+	var rt entity.OAuthRefreshToken
+	if err := dao.OAuthRefreshToken.Ctx(ctx).Where("token", set.RefreshToken).Scan(&rt); err != nil {
+		t.Fatalf("查询 refresh_token 失败: %v", err)
+	}
+	if rt.RevokedAt == nil {
+		t.Error("重放后 refresh_token 必须被吊销（否则泄露的 RT 在 7 天 TTL 内继续有效）")
+	}
+	// access_token 应已被删除（userinfo 立即失效）
+	n, err := dao.OAuthAccessToken.Ctx(ctx).Where("token", set.AccessToken).Count()
+	if err != nil {
+		t.Fatalf("查询 access_token 失败: %v", err)
+	}
+	if n != 0 {
+		t.Error("重放后 access_token 必须被删除")
+	}
+	// 副作用边界：不该顺手吊销别的 code 签发的令牌
+	other := newCode(t, ctx, u)
+	ac2, err := oidc.ConsumeAuthorizationCode(ctx, other, consts.ClientGSAC, testRedirect, testVerifier)
+	if err != nil {
+		t.Fatalf("第二个 code 消费应成功: %v", err)
+	}
+	set2, err := oidc.IssueTokenSet(ctx, consts.ClientGSAC, u, ac2.Scope, ac2.Nonce, ac2.Id)
+	if err != nil {
+		t.Fatalf("第二套令牌签发失败: %v", err)
+	}
+	var rt2 entity.OAuthRefreshToken
+	if err := dao.OAuthRefreshToken.Ctx(ctx).Where("token", set2.RefreshToken).Scan(&rt2); err != nil {
+		t.Fatalf("查询第二个 refresh_token 失败: %v", err)
+	}
+	if rt2.RevokedAt != nil {
+		t.Error("无关 code 的令牌不应被连带吊销（按 code_id 精确溯源）")
 	}
 }

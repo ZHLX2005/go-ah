@@ -89,6 +89,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS "idx_o_auth_refresh_tokens_token" ON "o_auth_r
 CREATE INDEX IF NOT EXISTS "idx_o_auth_refresh_tokens_client_id" ON "o_auth_refresh_tokens" ("client_id");
 CREATE INDEX IF NOT EXISTS "idx_o_auth_refresh_tokens_user_id" ON "o_auth_refresh_tokens" ("user_id");
 CREATE INDEX IF NOT EXISTS "idx_o_auth_refresh_tokens_expires_at" ON "o_auth_refresh_tokens" ("expires_at");
+-- 授权码溯源：RFC 6749 §4.1.2 要求检测到 code 重放时吊销它签发过的令牌，
+-- 令牌表必须有指向 code 的外联列才能做精确吊销。可空：refresh 换发的
+-- access_token 没有对应的 code。用 ALTER + IF NOT EXISTS 与 last_login_at
+-- 同一套迁移口径：已存在的线上表安全补列。
+ALTER TABLE "o_auth_refresh_tokens" ADD COLUMN IF NOT EXISTS "authorization_code_id" BIGINT;
+CREATE INDEX IF NOT EXISTS "idx_o_auth_refresh_tokens_code_id" ON "o_auth_refresh_tokens" ("authorization_code_id");
 
 -- 访问令牌（供 /oauth2/userinfo 做 Bearer 鉴权）
 CREATE TABLE IF NOT EXISTS "o_auth_access_tokens" (
@@ -104,6 +110,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS "idx_o_auth_access_tokens_token" ON "o_auth_ac
 CREATE INDEX IF NOT EXISTS "idx_o_auth_access_tokens_client_id" ON "o_auth_access_tokens" ("client_id");
 CREATE INDEX IF NOT EXISTS "idx_o_auth_access_tokens_user_id" ON "o_auth_access_tokens" ("user_id");
 CREATE INDEX IF NOT EXISTS "idx_o_auth_access_tokens_expires_at" ON "o_auth_access_tokens" ("expires_at");
+-- 同上：code 重放吊销的溯源列（语义见 o_auth_refresh_tokens 处的注释）。
+ALTER TABLE "o_auth_access_tokens" ADD COLUMN IF NOT EXISTS "authorization_code_id" BIGINT;
+CREATE INDEX IF NOT EXISTS "idx_o_auth_access_tokens_code_id" ON "o_auth_access_tokens" ("authorization_code_id");
 
 -- 全局登录会话（IdP 侧 SSO 会话）
 CREATE TABLE IF NOT EXISTS "user_sessions" (

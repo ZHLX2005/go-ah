@@ -66,6 +66,8 @@ type OAuthRefreshToken struct {
 	ExpiresAt interface{} `orm:"expires_at"`
 	RevokedAt interface{} `orm:"revoked_at"`
 	CreatedAt interface{} `orm:"created_at"`
+	// AuthorizationCodeId code 重放吊销的溯源列（语义见 entity 包）
+	AuthorizationCodeId interface{} `orm:"authorization_code_id"`
 }
 
 // OAuthAccessToken o_auth_access_tokens 表的可写列
@@ -78,6 +80,8 @@ type OAuthAccessToken struct {
 	Scope     interface{} `orm:"scope"`
 	ExpiresAt interface{} `orm:"expires_at"`
 	CreatedAt interface{} `orm:"created_at"`
+	// AuthorizationCodeId code 重放吊销的溯源列（语义见 entity 包）
+	AuthorizationCodeId interface{} `orm:"authorization_code_id"`
 }
 
 // UserSession user_sessions 表的可写列
