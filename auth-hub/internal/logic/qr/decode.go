@@ -8,8 +8,15 @@
 // 只解 QR（不认其它码制）：这个端点的唯一用途是读"本平台发出的登录码"，
 // 认其它码制只会带来"拍到一张别人的商品条码然后报看不懂的错"。
 //
-// 纯 Go（goqr）→ 不引入 cgo、不引入原生库、不挑平台 —— 后端本来就没有
-// 平台限制，客户端要的是"少背几 MB"。
+// ── 为什么是 gozxing（ZXing 移植）而不是更小的 goqr ─────────────────────
+//
+// goqr 只认"接近理想的图"：渲染出来的二维码、清晰截屏。真实手机拍屏幕
+// 带来四种它处理不了的退化——屏幕像素网格与传感器互拍出的摩尔纹、
+// 弱光下的低对比、斜拍的透视畸变、失焦模糊。曾用它上线，症状就是
+// "用户明明对着码拍，服务端却报图片里没有识别到二维码"。
+// gozxing 的 HybridBinarizer 对光照不均有免疫力，配 TRY_HARDER 后
+// 对上述四类退化都有战斗力；代价是慢一些，所以配合多尺度重试
+// （见 decodeScales）把 CPU 控制在有界范围内。
 
 package qr
 
@@ -21,7 +28,10 @@ import (
 	_ "image/png"  // 注册 PNG 解码器
 	"io"
 
-	"github.com/liyue201/goqr"
+	xdraw "golang.org/x/image/draw"
+
+	gozxing "github.com/makiuchi-d/gozxing"
+	"github.com/makiuchi-d/gozxing/qrcode"
 )
 
 // ErrNoQRCode 是"图里没有二维码"这一类失败的统一错误。
@@ -32,6 +42,24 @@ var ErrNoQRCode = errors.New("图片里没有识别到二维码")
 
 // ErrBadImage 是"这不是一张能解码的图片"。
 var ErrBadImage = errors.New("无法解析图片（仅支持 JPEG / PNG）")
+
+// decodeScales 逐个尝试的"最长边"像素序列（从大到小）。
+//
+// 2400 是给"码只占画面一小块"的照片的：手机拍整屏登录页时，4000px
+// 的照片里码可能只有五六百像素，再往下缩码就只剩几个像素的模块，
+// 定位无从谈起——所以第一档要贴着原尺度（但有界，防 8000px 大图
+// 把 CPU 打满）。1600 是全幅码的舒适区；900 / 500 给"离得远、码在
+// 图里占比极小"的照片留——缩小后信噪比反而变好。截图类输入本来就
+// ≤1600，第一轮等价于原尺度解码，不会退化。
+var decodeScales = []int{2400, 1600, 900, 500}
+
+// maxDecodeSide 解码前先把大图压到这个最长边以内（等比）。
+//
+// 它必须 ≥ decodeScales 的最大值：等于"先归一化、再多尺度重试"，
+// 两套数字耦合着改会造出一个永远跳过的尺度。2400 同时是 CPU 上界：
+// HybridBinarizer 的开销与像素数线性相关，2400² 以内的单次解码
+// 在限流（10 次/分钟/IP）配合下可控。
+const maxDecodeSide = 2400
 
 // DecodeImage 从图片字节里识别二维码，返回其中的原始字符串。
 //
@@ -46,17 +74,52 @@ func DecodeImage(data []byte) (string, error) {
 	if err != nil {
 		return "", ErrBadImage
 	}
-	codes, err := goqr.Recognize(img)
-	if err != nil || len(codes) == 0 {
-		return "", ErrNoQRCode
-	}
-	for _, c := range codes {
-		if c == nil || len(c.Payload) == 0 {
-			continue
+	return recognizeAnyScale(img)
+}
+
+// recognizeAnyScale 在归一化后的多个尺度上依次尝试识别，任一命中即返回。
+//
+// 每次缩放都是等比的（CatmullRom 保平滑，避免缩放本身制造锯齿噪声），失败才试下一个尺度，
+// 全部失败统一报 ErrNoQRCode——调用方不关心是哪个尺度没认出来。
+func recognizeAnyScale(img image.Image) (string, error) {
+	base := fitWithin(img, maxDecodeSide)
+	for _, side := range decodeScales {
+		if text, err := recognize(fitWithin(base, side)); err == nil && text != "" {
+			return text, nil
 		}
-		return string(c.Payload), nil
 	}
 	return "", ErrNoQRCode
+}
+
+// recognize 在单张图上跑一次 gozxing 解码（TRY_HARDER）。
+func recognize(img image.Image) (string, error) {
+	bm, err := gozxing.NewBinaryBitmapFromImage(img)
+	if err != nil {
+		return "", err
+	}
+	hints := map[gozxing.DecodeHintType]interface{}{
+		gozxing.DecodeHintType_TRY_HARDER: true,
+	}
+	res, err := qrcode.NewQRCodeReader().Decode(bm, hints)
+	if err != nil {
+		return "", err
+	}
+	return res.GetText(), nil
+}
+
+// fitWithin 把图等比缩到"最长边 ≤ side"；已满足时原样返回（零拷贝路径，
+// 截图类小图不会为此多分配一次内存）。
+func fitWithin(img image.Image, side int) image.Image {
+	b := img.Bounds()
+	w, h := b.Dx(), b.Dy()
+	if w <= side && h <= side {
+		return img
+	}
+	scale := float64(side) / float64(max(w, h))
+	nw, nh := max(1, int(float64(w)*scale)), max(1, int(float64(h)*scale))
+	dst := image.NewRGBA(image.Rect(0, 0, nw, nh))
+	xdraw.CatmullRom.Scale(dst, dst.Bounds(), img, b, xdraw.Over, nil)
+	return dst
 }
 
 // DecodeImageFrom 从流里读上限内的字节再解码。

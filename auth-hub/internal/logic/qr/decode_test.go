@@ -115,3 +115,25 @@ func TestTransportLimitExceedsImageLimit(t *testing.T) {
 			consts.MaxRequestBodyBytes, MaxDecodeImageBytes)
 	}
 }
+
+// TestDecodeImageReadsQRFromHardPhoto 真实拍照级退化图必须能解出。
+//
+// 这张夹具（testdata/qr_photo_hard.jpg）离线生成，模拟手机拍屏幕登录页的
+// 完整退化链：码只占画面 3.4%（整页 + 屏幕边框）+ 摩尔纹 + 反光斑压在
+// 码上 + 轻透视 + 旋转 + 失焦模糊 + 低对比 + 噪点 + JPEG 伪影。goqr 时代它解不出（线上真实症状
+// "图片里没有识别到二维码"），换 gozxing + 多尺度重试后必须稳定解出——
+// 断言的就是这次修复本身，删掉这个用例等于删掉回归防线。
+func TestDecodeImageReadsQRFromHardPhoto(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "qr_photo_hard.jpg"))
+	if err != nil {
+		t.Fatalf("读拍照风格夹具失败: %v", err)
+	}
+	got, err := DecodeImage(data)
+	if err != nil {
+		t.Fatalf("拍照风格图应能解出: %v", err)
+	}
+	const want = "http://47.110.80.47:8082/scan?ticket=qrt_3kF9mQ2xVb8sLd7NpR4tWuYz1aE6hG0jC5iXoK2vBnM"
+	if got != want {
+		t.Fatalf("解出的内容不对:\n  得到 %q\n  期望 %q", got, want)
+	}
+}
