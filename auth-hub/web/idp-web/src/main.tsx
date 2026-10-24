@@ -7,7 +7,7 @@ import LoginPage from '@/pages/Login'
 import RegisterPage from '@/pages/Register'
 import ConsentPage from '@/pages/Consent'
 import LogoutPage from '@/pages/Logout'
-import WelcomePage from '@/pages/Welcome'
+import HomePage from '@/pages/Home'
 import ScanPage from '@/pages/Scan'
 import './app.css'
 
@@ -26,17 +26,13 @@ createRoot(host).render(
     <BrowserRouter>
       <ToastProvider>
         <Routes>
+          {/* ── 平台首页：登录成功（扫码/口令、无业务方上下文）的落点 ── */}
+          <Route path="/" element={<HomePage />} />
           {/* ── IDP 认证页面（终端用户会看到的几个）── */}
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />
           <Route path="/consent" element={<ConsentPage />} />
           <Route path="/logout" element={<LogoutPage />} />
-          {/*
-            登录成功落地页。扫码/口令登录建立的是平台自己的会话，与接入方无关；
-            无业务方上下文时落在这里，而不是被塞进要求 client_id 的授权端点
-            （详见 Welcome.tsx 的文件注释与 controller/oidc 对空 client_id 的分支）。
-          */}
-          <Route path="/welcome" element={<WelcomePage />} />
           {/*
             手机扫码确认页。这条路由的名字被后端写死在二维码内容里
             （auth-hub/internal/controller/qr 的 scanPagePath），
