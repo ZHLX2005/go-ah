@@ -120,6 +120,18 @@ func (c *Controller) Authorize(ctx context.Context, req *v1.AuthorizeReq) error 
 		method = "S256"
 	}
 
+	// 没带 client_id：不是协议错误，是"没有业务方上下文"——用户直接
+	// 打开了登录平台（手输地址，或扫码/密码登录成功后落到裸授权端点）。
+	// 登录平台自己的会话（idp_session）与任何接入方无关，把他送去
+	// /welcome 落地页：已登录则展示身份，未登录由落地页转 /login。
+	// 曾经这里直接回 "invalid client_id" 明文：从业务方正常进来时
+	// return_to 总带着完整参数没人踩到，直接访问 + 扫码的组合
+	// 让用户在"扫码明明成功了"之后看到一句报错。
+	if req.ClientID == "" {
+		response.Redirect(r, "/welcome")
+		return nil
+	}
+
 	client, err := oidc.FindClient(ctx, req.ClientID)
 	if err != nil {
 		response.Plain(r, http.StatusInternalServerError, "查询客户端失败")

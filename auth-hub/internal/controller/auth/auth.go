@@ -55,8 +55,11 @@ func tooManyRequests(r *ghttp.Request, retryAfter int, msg string) {
 }
 
 // defaultReturnTo 登录/注册成功后没有指定回跳时的落点：
-// 回到 OIDC 授权端点，继续原本被打断的授权流程
-const defaultReturnTo = "/oauth2/auth"
+// 平台自己的"已登录"页。曾经是 /oauth2/auth——但直接打开登录平台时
+// 没有业务方上下文，授权端点天生要求 client_id，落过去就是一句
+// 莫名其妙的 invalid client_id（扫码明明成功了）。有业务方上下文时
+// return_to 总会带完整参数进来，不走这个默认值。
+const defaultReturnTo = "/welcome"
 
 // sanitizeReturnTo 把 return_to 限制在**站内相对路径**。
 //

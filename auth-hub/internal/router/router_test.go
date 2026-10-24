@@ -41,6 +41,18 @@ var testClient = &http.Client{
 	Transport: &http.Transport{Proxy: nil},
 }
 
+// noRedirectClient 不跟随重定向的客户端：路由清点只关心"端点是否注册"——
+// 3xx 也是注册了的响应。跟随重定向会把前端路由（测试环境没有 SPA 产物，
+// 必 404）误判成"端点不存在"，结论正好指向相反方向。授权端点对无
+// client_id 的访问 302 到 /welcome 之后，这条路径必须用它来清点。
+var noRedirectClient = &http.Client{
+	Timeout:   5 * time.Second,
+	Transport: testClient.Transport,
+	CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	},
+}
+
 type endpoint struct {
 	method string
 	path   string
@@ -324,7 +336,15 @@ func TestHTTPContract(t *testing.T) {
 
 	t.Run("路由清单里的端点都可达（非 404）", func(t *testing.T) {
 		for _, e := range routeInventory {
-			res, _ := request(t, e.method, base+e.path, "application/json", "")
+			req, err := http.NewRequest(e.method, base+e.path, nil)
+			if err != nil {
+				t.Fatalf("构造请求失败: %v", err)
+			}
+			res, err := noRedirectClient.Do(req)
+			if err != nil {
+				t.Fatalf("%s %s 请求失败: %v", e.method, e.path, err)
+			}
+			_ = res.Body.Close()
 			if res.StatusCode == http.StatusNotFound {
 				t.Errorf("%s %s 返回 404，路由未注册", e.method, e.path)
 			}

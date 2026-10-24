@@ -24,7 +24,10 @@ type Mode = 'password' | 'qr'
 
 export default function LoginPage() {
   const [sp] = useSearchParams()
-  const returnTo = sp.get('return_to') ?? '/oauth2/auth'
+  // 兜底落点是 /welcome（平台自己的已登录页）而不是 /oauth2/auth：
+  // 直接打开登录平台时没有业务方上下文，扫码/密码成功后若跳授权端点，
+  // 那里天生要求 client_id，用户会看到一句莫名其妙的 invalid client_id。
+  const returnTo = sp.get('return_to') ?? '/welcome'
 
   const [mode, setMode] = useState<Mode>('password')
   const [username, setUsername] = useState('')
