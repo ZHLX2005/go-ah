@@ -24,11 +24,10 @@ import (
 	"bytes"
 	"errors"
 	"image"
+	"image/color"
 	_ "image/jpeg" // 注册 JPEG 解码器
 	_ "image/png"  // 注册 PNG 解码器
 	"io"
-
-	xdraw "golang.org/x/image/draw"
 
 	gozxing "github.com/makiuchi-d/gozxing"
 	"github.com/makiuchi-d/gozxing/qrcode"
@@ -79,7 +78,7 @@ func DecodeImage(data []byte) (string, error) {
 
 // recognizeAnyScale 在归一化后的多个尺度上依次尝试识别，任一命中即返回。
 //
-// 每次缩放都是等比的（CatmullRom 保平滑，避免缩放本身制造锯齿噪声），失败才试下一个尺度，
+// 每次缩放都是等比的盒式平均（低通，顺带压摩尔纹），失败才试下一个尺度，
 // 全部失败统一报 ErrNoQRCode——调用方不关心是哪个尺度没认出来。
 func recognizeAnyScale(img image.Image) (string, error) {
 	base := fitWithin(img, maxDecodeSide)
@@ -109,6 +108,12 @@ func recognize(img image.Image) (string, error) {
 
 // fitWithin 把图等比缩到"最长边 ≤ side"；已满足时原样返回（零拷贝路径，
 // 截图类小图不会为此多分配一次内存）。
+//
+// 缩放是手写的盒式平均（每个目标像素 = 对应源矩形区域的灰度均值）：
+// 一是不为一条插值引入 golang.org/x/image——它的最新版把 go.mod 的
+// go 指令抬到 1.26，而部署镜像与 CI 都还钉在 1.25，为缩放算法升全链路
+// 工具链不成比例；二是缩到识别尺度这件事本来就不需要卷积插值的"锐"，
+// 盒式平均天然低通，反而顺带压掉摩尔纹这类高频噪声。
 func fitWithin(img image.Image, side int) image.Image {
 	b := img.Bounds()
 	w, h := b.Dx(), b.Dy()
@@ -117,9 +122,55 @@ func fitWithin(img image.Image, side int) image.Image {
 	}
 	scale := float64(side) / float64(max(w, h))
 	nw, nh := max(1, int(float64(w)*scale)), max(1, int(float64(h)*scale))
-	dst := image.NewRGBA(image.Rect(0, 0, nw, nh))
-	xdraw.CatmullRom.Scale(dst, dst.Bounds(), img, b, xdraw.Over, nil)
+
+	gray := toGray(img)
+	dst := image.NewGray(image.Rect(0, 0, nw, nh))
+	for dy := 0; dy < nh; dy++ {
+		y0 := b.Min.Y + dy*h/nh
+		y1 := b.Min.Y + (dy+1)*h/nh
+		if y1 <= y0 {
+			y1 = y0 + 1
+		}
+		for dx := 0; dx < nw; dx++ {
+			x0 := b.Min.X + dx*w/nw
+			x1 := b.Min.X + (dx+1)*w/nw
+			if x1 <= x0 {
+				x1 = x0 + 1
+			}
+			dst.SetGray(dx, dy, boxAverage(gray, x0, y0, x1, y1))
+		}
+	}
 	return dst
+}
+
+// toGray 任意图转灰度（识码只需要亮度通道；顺手把 RGBA→单通道的
+// 重复计算也省了，后面每个尺度都会再走一次灰度）。
+func toGray(img image.Image) *image.Gray {
+	b := img.Bounds()
+	g := image.NewGray(b)
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			g.SetGray(x, y, color.GrayModel.Convert(img.At(x, y)).(color.Gray))
+		}
+	}
+	return g
+}
+
+// boxAverage 求一个矩形区域的平均灰度。整数累加，4000px 级区块
+// 的和不超过 uint64 的零头。
+func boxAverage(g *image.Gray, x0, y0, x1, y1 int) color.Gray {
+	var sum, n uint64
+	for y := y0; y < y1; y++ {
+		row := g.Pix[y*g.Stride:]
+		for x := x0; x < x1; x++ {
+			sum += uint64(row[x])
+		}
+		n += uint64(x1 - x0)
+	}
+	if n == 0 {
+		return color.Gray{Y: 0}
+	}
+	return color.Gray{Y: uint8(sum / n)}
 }
 
 // DecodeImageFrom 从流里读上限内的字节再解码。

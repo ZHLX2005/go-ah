@@ -1,6 +1,6 @@
 module github.com/ZHLX2005/go-ah/auth-hub
 
-go 1.26.0
+go 1.25.0
 
 require (
 	github.com/gogf/gf/contrib/drivers/pgsql/v2 v2.10.3
@@ -8,7 +8,6 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.2.0
 	github.com/makiuchi-d/gozxing v0.1.1
 	golang.org/x/crypto v0.38.0
-	golang.org/x/image v0.47.0
 )
 
 require (
@@ -37,8 +36,8 @@ require (
 	go.opentelemetry.io/otel/sdk v1.38.0 // indirect
 	go.opentelemetry.io/otel/trace v1.38.0 // indirect
 	golang.org/x/net v0.40.0 // indirect
-	golang.org/x/sys v0.49.0 // indirect
-	golang.org/x/text v0.43.0 // indirect
+	golang.org/x/sys v0.35.0 // indirect
+	golang.org/x/text v0.25.0 // indirect
 	golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
