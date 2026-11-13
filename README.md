@@ -365,6 +365,36 @@ CLI 已把 stdout/stderr 重配为 UTF-8（二维码字符 `▀▄█` 在 cp936
 
 > schema 由 `IDP_DSN` 的 `search_path` 决定，默认 `auth_hub`。共享 PG 实例上务必保持独立 schema：`public` 下很可能已有同名的 `users` 表，串了 AutoMigrate 会去改别人的表。
 
+### 7.1 「登录态掉了」的排查顺序
+
+用户在客户端上表现为"登录后过一会儿就要重新登录"时，**先分清是哪一侧**再动手 —— 两侧的排查手段完全不同：
+
+```sql
+-- 服务端这一侧：会话还在吗？TTL 是多少？
+select id, user_id, created_at, expires_at, (expires_at - created_at) as ttl
+from auth_hub.user_sessions order by id desc limit 10;
+```
+
+- **TTL 全是 30 天、且行还在** → 服务端没问题（`user_sessions` 的行只被
+  `session.Destroy` / `DestroyAllForUser` / janitor 三处删）。此时症状一定在**客户端**，
+  继续查客户端怎么保管这枚 Cookie。
+- **TTL 是 8 小时** → 线上跑的是 8h 那版（`9f2d93e` 之前），重新部署即可。
+
+客户端侧最容易踩的是**存储键名撞车**：`SharedPreferences` 是全局扁平命名空间，
+两个存储若共用一个键名，其中一个的清理动作会删掉另一个的数据。症状是
+"内存里还活着（同一进程内看不出问题），一重启就没了"。
+
+**2026-11-13 的实际案例**：fr 的 `IdpSessionStore` 用 `SharedPreferences['idp_session']`
+存登录态，而 `SharedPrefsTokenStorage` 的"遗留键清理"列表里也列了 `idp_session`
+（那份列表本是要清掉旧架构的凭据）。于是**每铸一次业务 token 就顺手删掉登录态**，
+而服务端那边明明是 30 天有效期 —— 看起来完全像"登录态过期"。
+排查靠的是上面那条 SQL：服务端 70 条会话全活着、TTL 全是 30 天，
+而客户端每天要重新登录七八次。
+
+**给客户端实现者的两条硬约束**（都来自这次事故）：
+1. 登录态与业务 token 必须用**不同的键名**，且带模块前缀（`authhub_idp_session`）。
+2. 一个存储的清理列表里**不得出现另一个存储正在用的键**。清理列表只列"这个存储自己写过、现已废弃"的键。
+
 **业务（template.db）**：`business_users`（按 auth-hub `sub` 关联，首次登录自动建档）、`business_sessions`（token 后端保管且**加密存储**，含 `encrypted` 标记与 access/refresh 过期时间）
 
 ## 8. 安全设计要点
